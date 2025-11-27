@@ -1,5 +1,7 @@
 mod version_manifest;
+use futures::{future, stream::FuturesUnordered, FutureExt as _, StreamExt};
 use version_manifest::VersionManifestV2;
+mod client_json;
 
 use std::path::PathBuf;
 use tokio::fs;
@@ -73,6 +75,36 @@ async fn get_updated_manifest_file(args: &Args, client: &reqwest::Client) -> any
     Ok(serde_json::from_str(&manifest_content)?)
 }
 
+enum LoadVersionAction {
+    Skipped,
+    Downloaded,
+}
+
+async fn load_version(args: &Args, client: &reqwest::Client, version: &version_manifest::Version) -> anyhow::Result<LoadVersionAction> {
+    let folder = args.output.join(&version.id);
+    fs::create_dir_all(&folder).await?;
+
+    let json_file = folder.join(format!("{}.json", version.id));
+    let sha1_file = folder.join(format!("{}.sha1", version.id));
+
+    let saved_sha1 = match fs::read_to_string(&sha1_file).await {
+        Ok(etag) => Some(etag),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into())
+    };
+
+    if saved_sha1.as_ref() == Some(&version.sha1) {
+        return Ok(LoadVersionAction::Skipped);
+    }
+
+    let json_content = client.get(&version.url).send().await?.error_for_status()?.text().await?;
+
+    fs::write(&json_file, &json_content).await?;
+    fs::write(&sha1_file, &version.sha1).await?;
+
+    Ok(LoadVersionAction::Downloaded)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -83,9 +115,39 @@ async fn main() -> anyhow::Result<()> {
     fs::create_dir_all(&args.output).await?;
     let manifest = get_updated_manifest_file(&args, &client).await?;
 
-    info!("Latest release: {}", manifest.latest.release);
-    info!("Latest snapshot: {}", manifest.latest.snapshot);
-    info!("Version count: {}", manifest.versions.len());
+    let loaded_versions = manifest.versions.iter().map(|version| {
+        load_version(&args, &client, version)
+            .map(move |result| (version, result))
+    }).collect::<FuturesUnordered<_>>();
 
-    anyhow::Result::Ok(())
+    let mut errors = Vec::new();
+    let mut skipped_all = true;
+    loaded_versions.enumerate().for_each(|(i, (version, result))| {
+        match result {
+            Ok(LoadVersionAction::Skipped) => { }
+            Ok(LoadVersionAction::Downloaded) => {
+                skipped_all = false;
+                info!("{:03}/{:03} Version '{}' success", i + 1, manifest.versions.len(), version.id);
+            },
+            Err(e) => {
+                error!("{:03}/{:03} Version '{}' error: {e}", i + 1, manifest.versions.len(), version.id);
+                errors.push(e);
+            },
+        }
+        
+        future::ready(())
+    }).await;
+
+    if skipped_all {
+        info!("All versions were skipped");
+    }
+
+    info!("Finished");
+    
+    if errors.is_empty() {
+        Ok(())
+    }
+    else {
+        Err(anyhow::anyhow!("{}", errors.into_iter().map(|e| format!("{e}")).reduce(|a, b| a + ", " + &b).unwrap()))
+    }
 }
