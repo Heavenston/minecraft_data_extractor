@@ -2,6 +2,7 @@ mod version_manifest;
 use futures::{future, stream::FuturesUnordered, FutureExt as _, StreamExt};
 use version_manifest::VersionManifestV2;
 mod client_json;
+mod extractors;
 
 use std::path::PathBuf;
 use tokio::fs;
