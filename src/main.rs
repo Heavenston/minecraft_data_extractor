@@ -59,6 +59,9 @@ pub(crate) struct Args {
     /// If specified, only download and extract the data for this version
     #[arg(short, long)]
     minecraft_version: Option<String>,
+    /// How much versions can be processed in parallel
+    #[arg(short, long, default_value_t = 10)]
+    parallelism: usize,
 }
 
 pub(crate) struct AppState {
@@ -186,19 +189,32 @@ async fn main() -> anyhow::Result<()> {
     fs::create_dir_all(&state.args.output).await?;
     let manifest = get_updated_manifest_file(&state).await?;
 
-    let mut errors = Vec::new();
-    for (i, version) in manifest.versions.iter().enumerate() {
-        let result = load_version(&state, &version).await;
+    info!(parallelism = state.args.parallelism, version_count = manifest.versions.len(), "Loading versions");
 
-        match result {
-            Ok(_) => {
-                info!("{:03}/{:03} Version '{}' success", i + 1, manifest.versions.len(), version.id);
-            },
-            Err(e) => {
-                error!("{:03}/{:03} Version '{}' error: {e}", i + 1, manifest.versions.len(), version.id);
-                errors.push(e);
-            },
+    let mut version_iter = manifest.versions.iter().enumerate();
+
+    let mut errors = Vec::new();
+    loop {
+        let futures_acc = FuturesUnordered::new();
+        for (i, version) in version_iter.by_ref().take(state.args.parallelism) {
+            futures_acc.push(
+                load_version(&state, version)
+                .map(move |result| (i, version, result))
+            );
         }
+        futures_acc.for_each(|(i, version, result)| {
+            match result {
+                Ok(_) => {
+                    info!("{:03}/{:03} Version '{}' success", i + 1, manifest.versions.len(), version.id);
+                },
+                Err(e) => {
+                    error!("{:03}/{:03} Version '{}' error: {e}", i + 1, manifest.versions.len(), version.id);
+                    errors.push(e);
+                },
+            }
+        
+            future::ready(())
+        }).await;
     }
 
     info!("Finished");
