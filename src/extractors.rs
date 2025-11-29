@@ -39,6 +39,7 @@ mod manager {
         cache: Option<VersionExtractionCache>,
         app_state: &'a AppState,
         version: &'a VersionClientJson,
+        duplicate_id_detection: HashMap<&'static str, TypeId>,
         extractions: HashMap<&'static str, Option<(Box<[u8]>, Arc<dyn Any + Send + Sync>)>>,
     }
 
@@ -73,6 +74,7 @@ mod manager {
                 cache,
                 app_state,
                 version,
+                duplicate_id_detection: Default::default(),
                 extractions: Default::default(),
             })
         }
@@ -103,10 +105,22 @@ mod manager {
         }
 
         pub async fn extract<K: ExtractorKind>(&mut self) -> anyhow::Result<Arc<K::Output>> {
+            match self.duplicate_id_detection.entry(&K::name()) {
+                std::collections::hash_map::Entry::Occupied(occupied_entry) => {
+                    assert_eq!(*occupied_entry.get(), std::any::TypeId::of::<K>(), "Duplicate extractor id detected on '{}'", K::name());
+                },
+                std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                    vacant_entry.insert(std::any::TypeId::of::<K>());
+                },
+            }
+
             if let Some(extracted_value) = self.extractions.get(&K::name()) {
                 match extracted_value {
                     Some((_, v)) => return Ok(Arc::downcast(Arc::clone(v)).expect("Should be the correct type")),
-                    None => bail!("Detected recursive call of ExtractionManager::extract<{}>", std::any::type_name::<K>()),
+                    None => {
+                        println!("{}", std::backtrace::Backtrace::force_capture());
+                        bail!("Detected recursive call of ExtractionManager::extract<{}>", std::any::type_name::<K>())
+                    },
                 }
             }
 

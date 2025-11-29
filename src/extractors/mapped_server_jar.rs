@@ -32,7 +32,7 @@ impl super::ExtractorKind for MappedServerJarExtractor {
     type Output = MappedServerJarResult;
 
     fn name() -> &'static str {
-        "server_jar_extractor"
+        "mapped_server_jar_extractor"
     }
 
     async fn extract(manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {

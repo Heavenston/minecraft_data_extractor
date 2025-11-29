@@ -187,7 +187,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     fs::create_dir_all(&state.args.output).await?;
-    let manifest = get_updated_manifest_file(&state).await?;
+    let mut manifest = get_updated_manifest_file(&state).await?;
+    manifest.versions.sort_by_key(|v| std::cmp::Reverse(v.release_time));
 
     info!(parallelism = state.args.parallelism, version_count = manifest.versions.len(), "Loading versions");
 
