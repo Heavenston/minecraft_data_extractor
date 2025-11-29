@@ -1,28 +1,80 @@
 mod version_manifest;
-use futures::{future, stream::FuturesUnordered, FutureExt as _, StreamExt};
+use futures::{future, stream::FuturesUnordered, FutureExt as _, StreamExt, TryStreamExt};
+use version_client_json::VersionClientJson;
 use version_manifest::VersionManifestV2;
-mod client_json;
+mod version_client_json;
 mod extractors;
 
-use std::path::PathBuf;
-use tokio::fs;
+use std::path::{Path, PathBuf};
+use tokio::{fs, io::AsyncWriteExt};
 
 use clap::Parser;
 use tracing::{debug, error, info, warn};
 
+pub const CODE_HASH: &str = env!("CODE_HASH");
+
+fn get_about(long: bool) -> String {
+    let mut start = "Extract data from minecraft jars".to_string();
+
+    if long {
+        start = start + "\n" + format!("Code hash: {}",
+            &CODE_HASH[..32]
+        ).as_str();
+    }
+
+    return start;
+}
+
+async fn download_asset(client: &reqwest::Client, download_info: &version_client_json::FileDownloadInfo, path: &Path) -> anyhow::Result<()> {
+    let sha1_file = path.with_extension("sha1");
+
+    let stored_sha1 = match fs::read_to_string(&sha1_file).await {
+        Ok(sha1) => Some(sha1),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into())
+    };
+
+    if stored_sha1.as_ref() == Some(&download_info.sha1) {
+        return Ok(());
+    }
+
+    let mut response = client.get(&download_info.url).send().await?.error_for_status()?;
+    let mut file = fs::File::create(path).await?;
+    while let Some(bytes) = response.chunk().await? {
+        file.write_all(&bytes).await?;
+    }
+
+    fs::write(&sha1_file, download_info.sha1.as_bytes()).await?;
+    
+    Ok(())
+}
+
 #[derive(Parser, Debug)]
-struct Args {
+#[command(about = get_about(false), long_about = get_about(true))]
+/// Extract data from minecraft jars
+pub(crate) struct Args {
     /// Directory where all data should be downloaded
     #[arg(long, short, default_value = "mc_data")]
     output: PathBuf,
     /// If specified, only download and extract the data for this version
-    #[arg(long)]
-    version: Option<String>,
+    #[arg(short, long)]
+    minecraft_version: Option<String>,
 }
 
-async fn get_updated_manifest_file(args: &Args, client: &reqwest::Client) -> anyhow::Result<VersionManifestV2> {
-    let manifest_etag_file_path = args.output.join("version_manifestv2.etag");
-    let manifest_json_file_path = args.output.join("version_manifestv2.json");
+pub(crate) struct AppState {
+    pub(crate) args: Args,
+    pub(crate) client: reqwest::Client,
+}
+
+impl AppState {
+    pub fn version_folder(&self, version_id: &str) -> PathBuf {
+        self.args.output.join(&version_id)
+    }
+}
+
+async fn get_updated_manifest_file(state: &AppState) -> anyhow::Result<VersionManifestV2> {
+    let manifest_etag_file_path = state.args.output.join("version_manifestv2.etag");
+    let manifest_json_file_path = state.args.output.join("version_manifestv2.json");
 
     let manifest_etag = match fs::read_to_string(&manifest_etag_file_path).await {
         Ok(etag) => {
@@ -39,7 +91,7 @@ async fn get_updated_manifest_file(args: &Args, client: &reqwest::Client) -> any
         }
     };
 
-    let mut manifest_request = client.get(VersionManifestV2::MANIFEST_URL);
+    let mut manifest_request = state.client.get(VersionManifestV2::MANIFEST_URL);
     if let Some(etag) = manifest_etag {
         manifest_request = manifest_request.header("If-None-Match", etag);
     }
@@ -76,14 +128,8 @@ async fn get_updated_manifest_file(args: &Args, client: &reqwest::Client) -> any
     Ok(serde_json::from_str(&manifest_content)?)
 }
 
-enum LoadVersionAction {
-    Skipped,
-    Downloaded,
-}
-
-async fn load_version(args: &Args, client: &reqwest::Client, version: &version_manifest::Version) -> anyhow::Result<LoadVersionAction> {
-    let folder = args.output.join(&version.id);
-    fs::create_dir_all(&folder).await?;
+async fn get_updated_version_client_json(state: &AppState, version: &version_manifest::Version) -> anyhow::Result<VersionClientJson> {
+    let folder = state.version_folder(&version.id);
 
     let json_file = folder.join(format!("{}.json", version.id));
     let sha1_file = folder.join(format!("{}.sha1", version.id));
@@ -95,39 +141,57 @@ async fn load_version(args: &Args, client: &reqwest::Client, version: &version_m
     };
 
     if saved_sha1.as_ref() == Some(&version.sha1) {
-        return Ok(LoadVersionAction::Skipped);
+        let json_content = fs::read_to_string(&json_file).await?;
+        let client_json = serde_json::from_str(&json_content)?;
+
+        Ok(client_json)
     }
+    else {
+        let json_content = state.client.get(&version.url).send().await?.error_for_status()?.text().await?;
 
-    let json_content = client.get(&version.url).send().await?.error_for_status()?.text().await?;
+        fs::write(&json_file, &json_content).await?;
+        fs::write(&sha1_file, &version.sha1).await?;
 
-    fs::write(&json_file, &json_content).await?;
-    fs::write(&sha1_file, &version.sha1).await?;
+        let client_json = serde_json::from_str(&json_content)?;
 
-    Ok(LoadVersionAction::Downloaded)
+        Ok(client_json)
+    }
+}
+
+async fn load_version(state: &AppState, version: &version_manifest::Version) -> anyhow::Result<()> {
+    let version_folder = state.version_folder(&version.id);
+    fs::create_dir_all(&version_folder).await?;
+
+    let client_json = get_updated_version_client_json(&state, version).await?;
+
+    let mut manager = extractors::ExtractionManager::new(state, &client_json).await?;
+
+    let rslt = manager.extract::<extractors::mapped_server_jar::MappedServerJarExtractor>().await?;
+    info!(?rslt, ?version, "Extracted");
+
+    manager.finish().await?;
+    
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
+    let state = AppState {
+        args,
+        client: reqwest::Client::new(),
+    };
 
-    let client = reqwest::Client::new();
-
-    fs::create_dir_all(&args.output).await?;
-    let manifest = get_updated_manifest_file(&args, &client).await?;
-
-    let loaded_versions = manifest.versions.iter().map(|version| {
-        load_version(&args, &client, version)
-            .map(move |result| (version, result))
-    }).collect::<FuturesUnordered<_>>();
+    fs::create_dir_all(&state.args.output).await?;
+    let manifest = get_updated_manifest_file(&state).await?;
 
     let mut errors = Vec::new();
-    let mut skipped_all = true;
-    loaded_versions.enumerate().for_each(|(i, (version, result))| {
+    for (i, version) in manifest.versions.iter().enumerate() {
+        let result = load_version(&state, &version).await;
+
         match result {
-            Ok(LoadVersionAction::Skipped) => { }
-            Ok(LoadVersionAction::Downloaded) => {
-                skipped_all = false;
+            Ok(_) => {
                 info!("{:03}/{:03} Version '{}' success", i + 1, manifest.versions.len(), version.id);
             },
             Err(e) => {
@@ -135,12 +199,6 @@ async fn main() -> anyhow::Result<()> {
                 errors.push(e);
             },
         }
-        
-        future::ready(())
-    }).await;
-
-    if skipped_all {
-        info!("All versions were skipped");
     }
 
     info!("Finished");

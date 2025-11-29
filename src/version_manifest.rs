@@ -24,7 +24,7 @@ pub struct Version {
     pub ty: VersionType,
     pub url: String,
     pub time: String,
-    pub release_time: String,
+    pub release_time: chrono::DateTime<chrono::Utc>,
     pub sha1: String,
 }
 
