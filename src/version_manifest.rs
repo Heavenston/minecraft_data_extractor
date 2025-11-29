@@ -5,7 +5,7 @@ pub struct LatestVersion {
     pub snapshot: String,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VersionType {
     Release,

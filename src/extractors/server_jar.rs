@@ -1,4 +1,4 @@
-use std::{ io::Read, path::PathBuf, sync::{ Arc, LazyLock } };
+use std::{ path::PathBuf, sync::{ Arc, LazyLock } };
 
 use anyhow::bail;
 use rc_zip_sync::ReadZip;
@@ -31,7 +31,7 @@ impl super::ExtractorKind for ServerJarExtractor {
                 return impl_.extract(manager).await;
             }
         }
-        bail!("Could not find a suitable implementation for ServerJarExtractor");
+        Err(super::VersionNotSupportedError.into())
     }
 }
 

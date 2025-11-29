@@ -19,6 +19,10 @@ pub trait ExtractorKind: Any {
     async fn extract(manager: &mut ExtractionManager) -> anyhow::Result<Self::Output>;
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("This version is not supported by this extractor")]
+pub struct VersionNotSupportedError;
+
 mod manager {
     use std::{ any::{ Any, TypeId }, collections::HashMap, sync::Arc };
     use anyhow::bail;
@@ -140,6 +144,7 @@ mod manager {
             let output = if let Some(cached_extraction) = cached_extraction {
                 cached_extraction
             } else {
+                debug!(extractor = K::name(), version_id = self.version.id, "Running extractor");
                 Arc::new(K::extract(self).await?)
             };
             let encoded = bincode::encode_to_vec(&*output, Self::bincode_config())?;

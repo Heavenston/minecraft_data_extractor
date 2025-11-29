@@ -41,7 +41,7 @@ impl super::ExtractorKind for MappedServerJarExtractor {
                 return impl_.extract(manager).await;
             }
         }
-        bail!("Could not find a suitable implementation for MappedServerJarExtractor");
+        Err(super::VersionNotSupportedError.into())
     }
 }
 

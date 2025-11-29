@@ -1,5 +1,5 @@
 mod version_manifest;
-use futures::{future, stream::FuturesUnordered, FutureExt as _, StreamExt, TryStreamExt};
+use futures::{ future, stream::FuturesUnordered, FutureExt as _, StreamExt };
 use version_client_json::VersionClientJson;
 use version_manifest::VersionManifestV2;
 mod version_client_json;
@@ -62,6 +62,9 @@ pub(crate) struct Args {
     /// How much versions can be processed in parallel
     #[arg(short, long, default_value_t = 10)]
     parallelism: usize,
+    /// If specified, only processes release versions
+    #[arg(long)]
+    releases_only: bool,
 }
 
 pub(crate) struct AppState {
@@ -187,12 +190,17 @@ async fn main() -> anyhow::Result<()> {
     };
 
     fs::create_dir_all(&state.args.output).await?;
-    let mut manifest = get_updated_manifest_file(&state).await?;
-    manifest.versions.sort_by_key(|v| std::cmp::Reverse(v.release_time));
+    let manifest = get_updated_manifest_file(&state).await?;
 
-    info!(parallelism = state.args.parallelism, version_count = manifest.versions.len(), "Loading versions");
+    let mut selected_versions = manifest.versions.iter()
+        .filter(|version| version.ty == version_manifest::VersionType::Release)
+        .cloned()
+        .collect::<Vec<_>>();
+    selected_versions.sort_by_key(|v| std::cmp::Reverse(v.release_time));
 
-    let mut version_iter = manifest.versions.iter().enumerate();
+    info!(parallelism = state.args.parallelism, version_count = selected_versions.len(), "Loading versions");
+
+    let mut version_iter = selected_versions.iter().enumerate();
 
     let mut errors = Vec::new();
     loop {
@@ -203,13 +211,16 @@ async fn main() -> anyhow::Result<()> {
                 .map(move |result| (i, version, result))
             );
         }
+        if futures_acc.len() == 0 { break }
         futures_acc.for_each(|(i, version, result)| {
             match result {
                 Ok(_) => {
-                    info!("{:03}/{:03} Version '{}' success", i + 1, manifest.versions.len(), version.id);
+                    info!("{:03}/{:03} Version '{}' success", i + 1, selected_versions.len(), version.id);
                 },
-                Err(e) => {
-                    error!("{:03}/{:03} Version '{}' error: {e}", i + 1, manifest.versions.len(), version.id);
+                Err(e) => if let Some(&extractors::VersionNotSupportedError) = e.downcast_ref() {
+                    warn!("{:03}/{:03} Version '{}' not supported", i + 1, selected_versions.len(), version.id);
+                } else {
+                    error!("{:03}/{:03} Version '{}' error: {e}", i + 1, selected_versions.len(), version.id);
                     errors.push(e);
                 },
             }
