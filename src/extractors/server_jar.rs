@@ -17,15 +17,16 @@ static IMPLS: LazyLock<Vec<Arc<dyn ServerJarExtractorImpl>>> = LazyLock::new(|| 
     ]
 });
 
+#[derive(Debug, Clone, Copy, Default, bincode::Encode)]
 pub struct ServerJarExtractor;
 impl super::ExtractorKind for ServerJarExtractor {
     type Output = PathBuf;
 
-    fn name() -> &'static str {
+    fn name(&self) -> &'static str {
         "server_jar_extractor"
     }
 
-    async fn extract(manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
+    async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
         for impl_ in &*IMPLS {
             if impl_.supports_version(manager.version()) {
                 return impl_.extract(manager).await;

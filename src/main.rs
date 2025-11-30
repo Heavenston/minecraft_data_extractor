@@ -198,8 +198,7 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
 
     let mut manager = extractors::ExtractionManager::new(state, &client_json).await?;
 
-    let version_json = manager.extract::<extractors::version_json::VersionJsonExtractor>().await?;
-    info!(?version_json);
+    manager.extract(extractors::mapped_server_jar::MappedServerJarExtractor).await?;
 
     manager.finish().await?;
     

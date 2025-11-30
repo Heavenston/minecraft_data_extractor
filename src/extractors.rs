@@ -11,13 +11,13 @@ pub trait ExtractorOutput: Any + bincode::Decode<()> + bincode::Encode + Send + 
 impl<T: Any + bincode::Decode<()> + bincode::Encode + Send + Sync> ExtractorOutput for T
 { }
 
-pub trait ExtractorKind: Any {
+pub trait ExtractorKind: Any + bincode::Encode {
     type Output: ExtractorOutput;
 
     /// Unique name for this extractor kind, used for serialization so should
     /// not change with time
-    fn name() -> &'static str;
-    async fn extract(manager: &mut ExtractionManager) -> anyhow::Result<Self::Output>;
+    fn name(&self) -> &'static str;
+    async fn extract(self, manager: &mut ExtractionManager) -> anyhow::Result<Self::Output>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -27,6 +27,7 @@ pub struct VersionNotSupportedError;
 mod manager {
     use std::{ any::{ Any, TypeId }, collections::HashMap, sync::Arc };
     use anyhow::bail;
+    use sha2::Digest;
     use tokio::fs;
     use tracing::{ trace, warn };
 
@@ -37,7 +38,7 @@ mod manager {
     struct VersionExtractionCache {
         /// We fully invalidate the cache when the code_hash changes
         code_hash: String,
-        extractions: HashMap<String, Box<[u8]>>,
+        extractions: HashMap<(String, [u8; 32]), Box<[u8]>>,
     }
 
     pub struct ExtractionManager<'a> {
@@ -45,7 +46,7 @@ mod manager {
         app_state: &'a AppState,
         version: &'a VersionClientJson,
         duplicate_id_detection: HashMap<&'static str, TypeId>,
-        extractions: HashMap<&'static str, Option<(Box<[u8]>, Arc<dyn Any + Send + Sync>)>>,
+        extractions: HashMap<(&'static str, [u8; 32]), Option<(Box<[u8]>, Arc<dyn Any + Send + Sync>)>>,
     }
 
     impl<'a> ExtractionManager<'a> {
@@ -91,7 +92,7 @@ mod manager {
             let cache = VersionExtractionCache {
                 code_hash: crate::CODE_HASH.into(),
                 extractions: self.extractions.into_iter()
-                    .map(|(k, v)| (k.to_string(), v.unwrap().0))
+                    .map(|((k1, k2), v)| ((k1.to_string(), k2), v.unwrap().0))
                     .collect(),
             };
 
@@ -109,17 +110,24 @@ mod manager {
             self.version
         }
 
-        pub async fn extract<K: ExtractorKind>(&mut self) -> anyhow::Result<Arc<K::Output>> {
-            match self.duplicate_id_detection.entry(&K::name()) {
+        pub async fn extract<K: ExtractorKind>(&mut self, extractor: K) -> anyhow::Result<Arc<K::Output>> {
+            let extractor_name = extractor.name();
+            let extractor_hash = {
+                let mut hasher = sha2::Sha256::new();
+                bincode::encode_into_std_write(&extractor, &mut hasher, Self::bincode_config())?;
+                hasher.finalize().as_slice().try_into().expect("Correct length")
+            };
+
+            match self.duplicate_id_detection.entry(&extractor_name) {
                 std::collections::hash_map::Entry::Occupied(occupied_entry) => {
-                    assert_eq!(*occupied_entry.get(), std::any::TypeId::of::<K>(), "Duplicate extractor id detected on '{}'", K::name());
+                    assert_eq!(*occupied_entry.get(), std::any::TypeId::of::<K>(), "Duplicate extractor id detected on '{extractor_name}'");
                 },
                 std::collections::hash_map::Entry::Vacant(vacant_entry) => {
                     vacant_entry.insert(std::any::TypeId::of::<K>());
                 },
             }
 
-            if let Some(extracted_value) = self.extractions.get(&K::name()) {
+            if let Some(extracted_value) = self.extractions.get(&(extractor_name, extractor_hash)) {
                 match extracted_value {
                     Some((_, v)) => return Ok(Arc::downcast(Arc::clone(v)).expect("Should be the correct type")),
                     None => {
@@ -131,25 +139,25 @@ mod manager {
 
             // Insert None to detect if while running K::extract this very method
             // is callled recursively, making an infinite loop
-            self.extractions.insert(K::name(), None);
+            self.extractions.insert((extractor_name, extractor_hash), None);
 
             let cached_extraction = self.cache.as_ref()
-                .and_then(|cache| cache.extractions.get(K::name()))
+                .and_then(|cache| cache.extractions.get(&(extractor_name.to_string(), extractor_hash)))
                 .and_then(|extraction_data| match bincode::decode_from_slice::<K::Output, _>(&extraction_data, Self::bincode_config()) {
                     Ok((output, _)) => Some(Arc::new(output)),
                     Err(error) => {
-                        warn!(%error, version_id = self.version.id, extractor = K::name(), extractor_type_name = std::any::type_name::<K>(), "Error decoding extractor cached output");
+                        warn!(%error, version_id = self.version.id, extractor = extractor_name, extractor_type_name = std::any::type_name::<K>(), "Error decoding extractor cached output");
                         None
                     },
                 });
             let output = if let Some(cached_extraction) = cached_extraction {
                 cached_extraction
             } else {
-                trace!(extractor = K::name(), version_id = self.version.id, "Running extractor");
-                Arc::new(K::extract(self).await?)
+                trace!(extractor = extractor_name, version_id = self.version.id, "Running extractor");
+                Arc::new(extractor.extract(self).await?)
             };
             let encoded = bincode::encode_to_vec(&*output, Self::bincode_config())?;
-            self.extractions.insert(K::name(), Some((encoded.into_boxed_slice(), Arc::clone(&output) as Arc<dyn Any + Send + Sync>)));
+            self.extractions.insert((extractor_name, extractor_hash), Some((encoded.into_boxed_slice(), Arc::clone(&output) as Arc<dyn Any + Send + Sync>)));
 
             Ok(output)
         }

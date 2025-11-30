@@ -11,20 +11,21 @@ static VERSION_JSON_FIRST_RELEASE_TIME: LazyLock<chrono::DateTime<chrono::Utc>> 
         .to_utc()
 });
 
+#[derive(Debug, Clone, Copy, Default, bincode::Encode)]
 pub struct VersionJsonExtractor;
 impl super::ExtractorKind for VersionJsonExtractor {
     type Output = VersionJson;
 
-    fn name() -> &'static str {
+    fn name(&self) -> &'static str {
         "version_json_extractor"
     }
 
-    async fn extract(manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
+    async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
         if manager.version().release_time < *VERSION_JSON_FIRST_RELEASE_TIME {
             return Err(super::VersionNotSupportedError.into());
         }
 
-        let server_jar_path = manager.extract::<super::server_jar::ServerJarExtractor>().await?;
+        let server_jar_path = manager.extract(super::server_jar::ServerJarExtractor).await?;
 
         let version_id = manager.version().id.clone();
         let version_json = tokio::task::spawn_blocking(move || -> anyhow::Result<VersionJson> {

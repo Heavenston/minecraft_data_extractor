@@ -27,15 +27,16 @@ pub struct MappedServerJarResult {
     pub path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, Default, bincode::Encode)]
 pub struct MappedServerJarExtractor;
 impl super::ExtractorKind for MappedServerJarExtractor {
     type Output = MappedServerJarResult;
 
-    fn name() -> &'static str {
+    fn name(&self) -> &'static str {
         "mapped_server_jar_extractor"
     }
 
-    async fn extract(manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
+    async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
         for impl_ in &*IMPLS {
             if impl_.supports_version(manager.version()) {
                 return impl_.extract(manager).await;
@@ -65,9 +66,9 @@ impl MappedServerJarExtractorImpl for MojmapsMapper {
         // TODO: Actually does nothing
 
         let version_folder = manager.app_state().version_folder(&manager.version().id);
-        let _server_jar_path = manager.extract::<super::server_jar::ServerJarExtractor>().await?;
+        let _server_jar_path = manager.extract(super::server_jar::ServerJarExtractor).await?;
 
-        let mappings_path = version_folder.join("server_mappings.txt");
+        let mappings_path = version_folder.join("server_mojmaps.txt");
         let mapped_jar_path = version_folder.join("server_mojmapped.jar");
 
         let Some(mappings_info) = manager.version().downloads.get("server_mappings")
