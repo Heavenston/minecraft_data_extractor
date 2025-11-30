@@ -1,8 +1,10 @@
 mod version_manifest;
-use futures::{ future, stream::FuturesUnordered, FutureExt as _, StreamExt };
+use anyhow::bail;
+use futures::{ stream::FuturesUnordered, FutureExt as _, StreamExt };
 use version_client_json::VersionClientJson;
 use version_manifest::VersionManifestV2;
 mod version_client_json;
+mod version_json;
 mod extractors;
 
 use std::path::{Path, PathBuf};
@@ -49,6 +51,27 @@ async fn download_asset(client: &reqwest::Client, download_info: &version_client
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum VersionTypeFilter {
+    Release,
+    Snapshot,
+    OldBeta,
+    OldAlpha,
+}
+
+impl VersionTypeFilter {
+    fn accepts(self, other: &version_manifest::VersionType) -> bool {
+        use version_manifest::VersionType as Other;
+        match (self, other) {
+            (Self::Release,  Other::Release) => true,
+            (Self::Snapshot, Other::Snapshot) => true,
+            (Self::OldBeta,  Other::OldBeta) => true,
+            (Self::OldAlpha, Other::OldAlpha) => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(about = get_about(false), long_about = get_about(true))]
 /// Extract data from minecraft jars
@@ -60,11 +83,14 @@ pub(crate) struct Args {
     #[arg(short, long)]
     minecraft_version: Option<String>,
     /// How much versions can be processed in parallel
-    #[arg(short, long, default_value_t = 10)]
+    #[arg(short, long, default_value_t = 3)]
     parallelism: usize,
-    /// If specified, only processes release versions
-    #[arg(long)]
-    releases_only: bool,
+    /// If specified, only processes the given version type
+    #[arg(short = 't', long = "type")]
+    type_filter: Vec<VersionTypeFilter>,
+    /// If specified, do not print the unsupported version warnings
+    #[arg(short = 'u', long)]
+    ignore_unsupported: bool,
 }
 
 pub(crate) struct AppState {
@@ -172,8 +198,8 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
 
     let mut manager = extractors::ExtractionManager::new(state, &client_json).await?;
 
-    let rslt = manager.extract::<extractors::mapped_server_jar::MappedServerJarExtractor>().await?;
-    info!(?rslt, ?version, "Extracted");
+    let version_json = manager.extract::<extractors::version_json::VersionJsonExtractor>().await?;
+    info!(?version_json);
 
     manager.finish().await?;
     
@@ -191,42 +217,60 @@ async fn main() -> anyhow::Result<()> {
 
     fs::create_dir_all(&state.args.output).await?;
     let manifest = get_updated_manifest_file(&state).await?;
+    info!(latest_release = manifest.latest.release, latest_snapshot = manifest.latest.snapshot, "Manifest loaded");
 
-    let mut selected_versions = manifest.versions.iter()
-        .filter(|version| version.ty == version_manifest::VersionType::Release)
-        .cloned()
-        .collect::<Vec<_>>();
-    selected_versions.sort_by_key(|v| std::cmp::Reverse(v.release_time));
+    let selected_versions = if let Some(version_id) = state.args.minecraft_version.as_deref() {
+        let Some(selected_version) = manifest.versions.iter().find(|v| v.id == version_id)
+        else {
+            error!(selected_version_id = version_id, "Version not found");
+            bail!("Version not found");
+        };
+
+        vec![selected_version]
+    } else {
+        let mut selected_versions = manifest.versions.iter()
+            .filter(|version| state.args.type_filter.is_empty() || state.args.type_filter.iter().any(|filter| filter.accepts(&version.ty)))
+            .collect::<Vec<_>>();
+        selected_versions.sort_by_key(|v| std::cmp::Reverse(v.release_time));
+        selected_versions
+    };
+
 
     info!(parallelism = state.args.parallelism, version_count = selected_versions.len(), "Loading versions");
 
-    let mut version_iter = selected_versions.iter().enumerate();
-
+    let mut version_iter = selected_versions.iter();
     let mut errors = Vec::new();
+    let mut futures_acc = FuturesUnordered::new();
+    let mut counter = 0;
+
     loop {
-        let futures_acc = FuturesUnordered::new();
-        for (i, version) in version_iter.by_ref().take(state.args.parallelism) {
+        while futures_acc.len() < state.args.parallelism && let Some(version) = version_iter.next() {
             futures_acc.push(
                 load_version(&state, version)
-                .map(move |result| (i, version, result))
+                .map(move |result| (version, result))
             );
         }
-        if futures_acc.len() == 0 { break }
-        futures_acc.for_each(|(i, version, result)| {
+
+        if let Some((version, result)) = futures_acc.next().await {
+            counter += 1;
+
             match result {
                 Ok(_) => {
-                    info!("{:03}/{:03} Version '{}' success", i + 1, selected_versions.len(), version.id);
+                    info!("{:03}/{:03} Version '{}' success", counter, selected_versions.len(), version.id);
                 },
                 Err(e) => if let Some(&extractors::VersionNotSupportedError) = e.downcast_ref() {
-                    warn!("{:03}/{:03} Version '{}' not supported", i + 1, selected_versions.len(), version.id);
+                    if !state.args.ignore_unsupported {
+                        warn!("{:03}/{:03} Version '{}' not supported", counter, selected_versions.len(), version.id);
+                    }
                 } else {
-                    error!("{:03}/{:03} Version '{}' error: {e}", i + 1, selected_versions.len(), version.id);
+                    error!("{:03}/{:03} Version '{}' error: {e}", counter, selected_versions.len(), version.id);
                     errors.push(e);
                 },
             }
-        
-            future::ready(())
-        }).await;
+        }
+        else {
+            break
+        }
     }
 
     info!("Finished");

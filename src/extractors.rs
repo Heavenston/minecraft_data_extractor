@@ -1,6 +1,7 @@
 pub mod packet_info;
 pub mod server_jar;
 pub mod mapped_server_jar;
+pub mod version_json;
 
 use std::any::Any;
 
@@ -27,7 +28,7 @@ mod manager {
     use std::{ any::{ Any, TypeId }, collections::HashMap, sync::Arc };
     use anyhow::bail;
     use tokio::fs;
-    use tracing::{ debug, warn };
+    use tracing::{ trace, warn };
 
     use crate::{ version_client_json::VersionClientJson, AppState };
     use super::*;
@@ -61,7 +62,7 @@ mod manager {
                             Some(cache)
                         }
                         else {
-                            debug!(version_id = version.id, "Disarded version extraction cache");
+                            trace!(version_id = version.id, "Disarded version extraction cache");
                             None
                         }
                     },
@@ -144,7 +145,7 @@ mod manager {
             let output = if let Some(cached_extraction) = cached_extraction {
                 cached_extraction
             } else {
-                debug!(extractor = K::name(), version_id = self.version.id, "Running extractor");
+                trace!(extractor = K::name(), version_id = self.version.id, "Running extractor");
                 Arc::new(K::extract(self).await?)
             };
             let encoded = bincode::encode_to_vec(&*output, Self::bincode_config())?;
