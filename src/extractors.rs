@@ -2,6 +2,8 @@ pub mod packet_info;
 pub mod server_jar;
 pub mod mapped_server_jar;
 pub mod version_json;
+pub mod mapped_class;
+pub mod mojang_mappings;
 
 use std::any::Any;
 
@@ -11,8 +13,19 @@ pub trait ExtractorOutput: Any + bincode::Decode<()> + bincode::Encode + Send + 
 impl<T: Any + bincode::Decode<()> + bincode::Encode + Send + Sync> ExtractorOutput for T
 { }
 
+#[derive(Debug, Clone)]
+pub struct ExtractorConfig {
+    pub store_output_in_cache: bool,
+}
+
 pub trait ExtractorKind: Any + bincode::Encode {
     type Output: ExtractorOutput;
+
+    fn config(&self) -> ExtractorConfig {
+        ExtractorConfig {
+            store_output_in_cache: true,
+        }
+    }
 
     /// Unique name for this extractor kind, used for serialization so should
     /// not change with time
@@ -25,7 +38,7 @@ pub trait ExtractorKind: Any + bincode::Encode {
 pub struct VersionNotSupportedError;
 
 mod manager {
-    use std::{ any::{ Any, TypeId }, collections::HashMap, path::PathBuf, sync::Arc };
+    use std::{ any::Any, collections::HashMap, path::PathBuf, sync::Arc };
     use anyhow::bail;
     use sha2::Digest;
     use tokio::fs;
@@ -41,12 +54,20 @@ mod manager {
         extractions: HashMap<(String, [u8; 32]), Box<[u8]>>,
     }
 
+    struct ExtractionEntry {
+        /// None when the value should not be stored in the cache
+        /// Contains the serialized value to be stored in the cache otherwise
+        encoded: Option<Box<[u8]>>,
+        value: Arc<dyn Any + Send + Sync>,
+    }
+
     pub struct ExtractionManager<'a> {
         cache: Option<VersionExtractionCache>,
         app_state: &'a AppState,
         version: &'a VersionClientJson,
-        duplicate_id_detection: HashMap<&'static str, TypeId>,
-        extractions: HashMap<(&'static str, [u8; 32]), Option<(Box<[u8]>, Arc<dyn Any + Send + Sync>)>>,
+        #[cfg(debug_assertions)]
+        duplicate_id_detection: HashMap<&'static str, std::any::TypeId>,
+        extractions: HashMap<(&'static str, [u8; 32]), Option<ExtractionEntry>>,
     }
 
     impl<'a> ExtractionManager<'a> {
@@ -80,6 +101,7 @@ mod manager {
                 cache,
                 app_state,
                 version,
+                #[cfg(debug_assertions)]
                 duplicate_id_detection: Default::default(),
                 extractions: Default::default(),
             })
@@ -92,7 +114,9 @@ mod manager {
             let cache = VersionExtractionCache {
                 code_hash: crate::CODE_HASH.into(),
                 extractions: self.extractions.into_iter()
-                    .map(|((k1, k2), v)| ((k1.to_string(), k2), v.unwrap().0))
+                    .filter_map(|(key, entry_opt)| entry_opt.map(|entry| (key, entry)))
+                    .filter_map(|(key, entry)| entry.encoded.map(|encoded| (key, encoded)))
+                    .map(|((k1, k2), encoded)| ((k1.to_string(), k2), encoded))
                     .collect(),
             };
 
@@ -140,6 +164,7 @@ mod manager {
                 hasher.finalize().as_slice().try_into().expect("Correct length")
             };
 
+            #[cfg(debug_assertions)]
             match self.duplicate_id_detection.entry(&extractor_name) {
                 std::collections::hash_map::Entry::Occupied(occupied_entry) => {
                     assert_eq!(*occupied_entry.get(), std::any::TypeId::of::<K>(), "Duplicate extractor id detected on '{extractor_name}'");
@@ -149,9 +174,11 @@ mod manager {
                 },
             }
 
-            if let Some(extracted_value) = self.extractions.get(&(extractor_name, extractor_hash)) {
+            let cfg = extractor.config();
+            if cfg.store_output_in_cache && let Some(extracted_value) = self.extractions.get(&(extractor_name, extractor_hash)) {
                 match extracted_value {
-                    Some((_, v)) => return Ok(Arc::downcast(Arc::clone(v)).expect("Should be the correct type")),
+                    Some(ExtractionEntry { encoded: _, value }) =>
+                        return Ok(Arc::downcast(Arc::clone(value)).expect("Should be the correct type")),
                     None => {
                         println!("{}", std::backtrace::Backtrace::force_capture());
                         bail!("Detected recursive call of ExtractionManager::extract<{}>", std::any::type_name::<K>())
@@ -172,14 +199,21 @@ mod manager {
                         None
                     },
                 });
+
             let output = if let Some(cached_extraction) = cached_extraction {
                 cached_extraction
             } else {
                 trace!(extractor = extractor_name, version_id = self.version.id, "Running extractor");
                 Arc::new(extractor.extract(self).await?)
             };
-            let encoded = bincode::encode_to_vec(&*output, Self::bincode_config())?;
-            self.extractions.insert((extractor_name, extractor_hash), Some((encoded.into_boxed_slice(), Arc::clone(&output) as Arc<dyn Any + Send + Sync>)));
+
+            self.extractions.insert((extractor_name, extractor_hash), Some(ExtractionEntry {
+                encoded: cfg.store_output_in_cache
+                    .then(|| bincode::encode_to_vec(&*output, Self::bincode_config()))
+                    .transpose()?
+                    .map(Vec::into_boxed_slice),
+                value: Arc::clone(&output) as Arc<dyn Any + Send + Sync>,
+            }));
 
             Ok(output)
         }

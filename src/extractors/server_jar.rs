@@ -65,7 +65,7 @@ impl ServerJarExtractorImpl for Post1Dot18ServerJarExtractor {
             let zip_file = wrapper_jar_file.read_zip()?;
 
             let Some(server_entry) = zip_file.by_name(format!("META-INF/versions/{0}/server-{0}.jar", version_id))
-            else { bail!("Could not find actual server jar from wrapper for version {version_id}") };
+            else { bail!("Could not find actual server jar from wrapper") };
 
             let mut jar_file = std::fs::File::create(&server_jar_path_)?;
 

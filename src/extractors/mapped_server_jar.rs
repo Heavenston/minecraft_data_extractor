@@ -1,8 +1,6 @@
 use std::{ path::PathBuf, sync::{ Arc, LazyLock } };
 
-use anyhow::bail;
-
-use crate::version_client_json::VersionClientJson;
+use crate::{mappings_brand::MappingsBrand, version_client_json::VersionClientJson};
 
 // The first version to release official mapping was '1.14.4' which release on '2019-07-19T09:25:47+00:00'
 static MOJMAPS_FIRST_VERSION_TIME: LazyLock<chrono::DateTime<chrono::Utc>> = LazyLock::new(|| {
@@ -15,11 +13,6 @@ static IMPLS: LazyLock<Vec<Arc<dyn MappedServerJarExtractorImpl>>> = LazyLock::n
         Arc::new(MojmapsMapper)
     ]
 });
-
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
-pub enum MappingsBrand {
-    Mojmaps,
-}
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct MappedServerJarResult {

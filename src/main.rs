@@ -6,6 +6,7 @@ use version_manifest::VersionManifestV2;
 mod version_client_json;
 mod version_json;
 mod extractors;
+mod mappings_brand;
 
 use std::path::{Path, PathBuf};
 use tokio::{fs, io::AsyncWriteExt};

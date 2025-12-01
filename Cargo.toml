@@ -11,6 +11,7 @@ bincode = "2.0.1"
 chrono = { version = "0.4.42", features = ["serde"] }
 clap = { version = "4.5.53", features = ["derive"] }
 futures = "0.3.31"
+noak = "0.6.3"
 rc-zip = "5.4.1"
 rc-zip-sync = "4.4.2"
 reqwest = { version = "0.12.24", features = ["json", "stream"] }
