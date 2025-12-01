@@ -25,7 +25,7 @@ pub trait ExtractorKind: Any + bincode::Encode {
 pub struct VersionNotSupportedError;
 
 mod manager {
-    use std::{ any::{ Any, TypeId }, collections::HashMap, sync::Arc };
+    use std::{ any::{ Any, TypeId }, collections::HashMap, path::PathBuf, sync::Arc };
     use anyhow::bail;
     use sha2::Digest;
     use tokio::fs;
@@ -108,6 +108,28 @@ mod manager {
 
         pub fn version(&self) -> &'a VersionClientJson {
             self.version
+        }
+
+        pub async fn download_asset(&mut self, name: &str) -> anyhow::Result<PathBuf> {
+            let Some(asset_info) = self.version().downloads.get(name)
+            else { bail!("Could not find asset {name} for version {}", self.version().id) };
+
+            // Get the file extension from the url
+            let extension = asset_info.url.split('.')
+                .last()
+                .map(|ext| format!(".{ext}"))
+                .unwrap_or(String::new());
+
+            let file_folder = self.app_state()
+                .version_folder(&self.version().id)
+                .join("assets");
+            fs::create_dir_all(&file_folder).await?;
+            let file_path = file_folder
+                .join(format!("{name}{extension}"));
+
+            crate::download_asset(&self.app_state.client, asset_info, &file_path).await?;
+
+            Ok(file_path)
         }
 
         pub async fn extract<K: ExtractorKind>(&mut self, extractor: K) -> anyhow::Result<Arc<K::Output>> {

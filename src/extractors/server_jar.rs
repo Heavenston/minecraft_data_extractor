@@ -54,14 +54,8 @@ impl ServerJarExtractorImpl for Post1Dot18ServerJarExtractor {
 
     async fn extract(&self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<<ServerJarExtractor as super::ExtractorKind>::Output> {
         let version_folder = manager.app_state().version_folder(&manager.version().id);
-        let server_wrapper_jar_path = version_folder.join("server_wrapper.jar");
+        let server_wrapper_jar_path = manager.download_asset("server").await?;
         let server_jar_path = version_folder.join("server.jar");
-
-        // All versions we deal with here (>=1.18) have a server download
-        let Some(mappings_info) = manager.version().downloads.get("server")
-        else { bail!("Could not find server download for version {}", manager.version().id) };
-
-        crate::download_asset(&manager.app_state().client, &mappings_info, &server_wrapper_jar_path).await?;
 
         let version_id = manager.version().id.clone();
 

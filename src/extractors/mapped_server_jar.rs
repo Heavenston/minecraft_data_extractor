@@ -68,13 +68,10 @@ impl MappedServerJarExtractorImpl for MojmapsMapper {
         let version_folder = manager.app_state().version_folder(&manager.version().id);
         let _server_jar_path = manager.extract(super::server_jar::ServerJarExtractor).await?;
 
-        let mappings_path = version_folder.join("server_mojmaps.txt");
+        let mappings_path = manager.download_asset("server_mappings").await?;
         let mapped_jar_path = version_folder.join("server_mojmapped.jar");
 
-        let Some(mappings_info) = manager.version().downloads.get("server_mappings")
-        else { bail!("Could not find server mappings for version {}", manager.version().id) };
-
-        crate::download_asset(&manager.app_state().client, &mappings_info, &mappings_path).await?;
+        let _ = mappings_path;
         
         Ok(MappedServerJarResult {
             brand: MappingsBrand::Mojmaps,
