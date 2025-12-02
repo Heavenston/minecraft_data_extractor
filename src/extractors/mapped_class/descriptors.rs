@@ -24,6 +24,16 @@ impl DescriptorsMappingsExt for mappings::Mappings {
     }
 }
 
+pub trait DescriptorsMappingsClassExt {
+    fn map_method_with_desc(&self, method_name: &str, desc: &MethodDescriptor) -> Option<&mappings::Method>;
+}
+
+impl DescriptorsMappingsClassExt for mappings::Class {
+    fn map_method_with_desc(&self, method_name: &str, desc: &MethodDescriptor) -> Option<&mappings::Method> {
+        self.map_method(method_name, &desc.return_type.to_string(), desc.args.iter().map(|h| h.to_string()))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TypeDescriptorKind {
     /// B
@@ -80,7 +90,7 @@ impl TypeDescriptorKind {
     pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Option<Self> {
         Some(match self {
             Self::Object(o) => {
-                Self::Object(mappings.map_class(&o)?.0.clone())
+                Self::Object(mappings.map_class(&o)?.name.0.clone())
             },
             other => other.clone(),
         })

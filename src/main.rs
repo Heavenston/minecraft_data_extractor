@@ -1,3 +1,5 @@
+#![expect(unstable_name_collisions)]
+
 mod version_manifest;
 use anyhow::{bail, Context};
 use futures::{ stream::FuturesUnordered, FutureExt as _, StreamExt };
@@ -211,7 +213,7 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
     let mut manager = extractors::ExtractionManager::new(state, &client_json).await?;
 
     let _ = manager.extract(extractors::mapped_class::MappedClassExtractor {
-        class: format!("net.minecraft.network.protocol.game.GameProtocols"),
+        class: format!("net.minecraft.network.protocol.configuration.ConfigurationProtocols"),
         mappings_brand: mappings::Brand::Mojmaps,
     }).await?;
 

@@ -131,9 +131,13 @@ pub struct Mappings {
 }
 
 impl Mappings {
-    pub fn map_class(&self, obfuscated_name: &str) -> Option<&IdentPath> {
+    pub fn map_class(&self, obfuscated_name: &str) -> Option<&Class> {
         self.class_mappings.iter()
             .find(|class| class.obfuscated_name.0 == obfuscated_name)
-            .map(|class| &class.name)
+    }
+
+    pub fn get_class(&self, name: &str) -> Option<&Class> {
+        self.class_mappings.iter()
+            .find(|class| class.name.0 == name)
     }
 }
