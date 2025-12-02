@@ -6,7 +6,7 @@ use version_manifest::VersionManifestV2;
 mod version_client_json;
 mod version_json;
 mod extractors;
-mod mappings_brand;
+mod mappings;
 
 use std::path::{Path, PathBuf};
 use tokio::{fs, io::AsyncWriteExt};
@@ -201,7 +201,7 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
 
     let _ = manager.extract(extractors::mapped_class::MappedClassExtractor {
         class: format!("net.minecraft.network.protocol.handshake.ClientIntentionPacket"),
-        mappings: mappings_brand::MappingsBrand::Mojmaps,
+        mappings: mappings::MappingsBrand::Mojmaps,
     }).await?;
 
     manager.finish().await?;

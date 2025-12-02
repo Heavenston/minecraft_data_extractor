@@ -8,7 +8,7 @@ use rc_zip_sync::ReadZip as _;
 use itertools::Itertools;
 use tracing::{info, trace};
 
-use crate::{extractors::mojang_mappings::MojmapIdentPath, mappings_brand::MappingsBrand};
+use crate::{extractors::mojang_mappings::MojmapIdentPath, mappings::MappingsBrand};
 
 pub struct MappedField {
     
