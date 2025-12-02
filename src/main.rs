@@ -1,5 +1,5 @@
 mod version_manifest;
-use anyhow::bail;
+use anyhow::{bail, Context};
 use futures::{ stream::FuturesUnordered, FutureExt as _, StreamExt };
 use version_client_json::VersionClientJson;
 use version_manifest::VersionManifestV2;
@@ -199,7 +199,8 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
 
     let mut manager = extractors::ExtractionManager::new(state, &client_json).await?;
 
-    manager.extract(extractors::mapped_server_jar::MappedServerJarExtractor).await?;
+    let _ = manager.extract(extractors::version_json::VersionJsonExtractor).await?;
+    let _ = manager.extract(extractors::mojang_mappings::MojangMappingsExtractor).await?;
 
     manager.finish().await?;
     
@@ -247,7 +248,7 @@ async fn main() -> anyhow::Result<()> {
         while futures_acc.len() < state.args.parallelism && let Some(version) = version_iter.next() {
             futures_acc.push(
                 load_version(&state, version)
-                .map(move |result| (version, result))
+                .map(move |result| (version, result.with_context(|| format!("While loading version {}", version.id))))
             );
         }
 

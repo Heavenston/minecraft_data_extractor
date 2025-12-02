@@ -136,7 +136,7 @@ mod manager {
 
         pub async fn download_asset(&mut self, name: &str) -> anyhow::Result<PathBuf> {
             let Some(asset_info) = self.version().downloads.get(name)
-            else { bail!("Could not find asset {name} for version {}", self.version().id) };
+            else { bail!("Could not find asset {name}") };
 
             // Get the file extension from the url
             let extension = asset_info.url.split('.')

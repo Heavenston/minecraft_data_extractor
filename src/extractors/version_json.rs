@@ -27,13 +27,12 @@ impl super::ExtractorKind for VersionJsonExtractor {
 
         let server_jar_path = manager.extract(super::server_jar::ServerJarExtractor).await?;
 
-        let version_id = manager.version().id.clone();
         let version_json = tokio::task::spawn_blocking(move || -> anyhow::Result<VersionJson> {
             let wrapper_jar_file = std::fs::File::open(&*server_jar_path)?;
             let zip_file = wrapper_jar_file.read_zip()?;
 
             let Some(version_file_entry) = zip_file.by_name("version.json")
-            else { bail!("Could not find the version.json for version {version_id}") };
+            else { bail!("Could not find the version.json") };
 
             let mut content = String::new();
             version_file_entry.reader().read_to_string(&mut content)?;
