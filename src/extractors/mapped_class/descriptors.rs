@@ -1,5 +1,28 @@
 use crate::mappings;
-use itertools::Itertools;
+use nom::Parser;
+use anyhow::anyhow;
+
+pub trait DescriptorsMappingsExt {
+    fn parse_and_map_type_descriptor(&self, desc: &str) -> anyhow::Result<TypeDescriptor>;
+
+    fn parse_and_map_method_descriptor(&self, desc: &str) -> anyhow::Result<MethodDescriptor>;
+}
+
+impl DescriptorsMappingsExt for mappings::Mappings {
+    fn parse_and_map_type_descriptor(&self, desc: &str) -> anyhow::Result<TypeDescriptor> {
+        let (_, obf_d) = nom::combinator::complete(TypeDescriptor::parse).parse(desc)
+            .map_err(|e| anyhow!("Type descriptor parse error: {e}"))?;
+
+        Ok(obf_d.to_mapped(self))
+    }
+
+    fn parse_and_map_method_descriptor(&self, desc: &str) -> anyhow::Result<MethodDescriptor> {
+        let (_, obf_d) = nom::combinator::complete(MethodDescriptor::parse).parse(desc)
+            .map_err(|e| anyhow!("Method descriptor parse error: {e}"))?;
+
+        Ok(obf_d.to_mapped(self))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum TypeDescriptorKind {

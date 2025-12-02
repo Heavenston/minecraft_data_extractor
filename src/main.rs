@@ -211,7 +211,7 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
     let mut manager = extractors::ExtractionManager::new(state, &client_json).await?;
 
     let _ = manager.extract(extractors::mapped_class::MappedClassExtractor {
-        class: format!("net.minecraft.network.protocol.handshake.ClientIntentionPacket"),
+        class: format!("net.minecraft.network.protocol.game.GameProtocols"),
         mappings_brand: mappings::Brand::Mojmaps,
     }).await?;
 
