@@ -1,6 +1,3 @@
-mod descriptors;
-use descriptors::*;
-
 use crate::mappings;
 
 use std::{io::Read, path::Path, sync::Arc};
@@ -9,25 +6,6 @@ use anyhow::{anyhow, bail, Context};
 use rc_zip_sync::ReadZip as _;
 use itertools::Itertools;
 use tracing::trace;
-
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
-pub struct MappedField {
-    pub name: mappings::Ident,
-    pub ty: mappings::Type,
-}
-
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
-pub struct MappedMethod {
-    
-}
-
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
-pub struct MappedClass {
-    pub name: mappings::IdentPath,
-    pub super_class: mappings::IdentPath,
-    pub fields: Vec<MappedField>,
-    pub methods: Vec<MappedMethod>,
-}
 
 #[derive(Debug, bincode::Encode)]
 pub struct MappedClassExtractor {
@@ -66,6 +44,71 @@ impl MappedClassExtractor {
 
         println!();
 
+        for attr in noak_class.attributes() {
+            let attr = attr.with_context(|| anyhow!("Could not decode class attribute"))?;
+            println!("Attr: {}", noak_class.pool().get(attr.name())?.content.to_str().unwrap_or_default());
+            if let Ok(noak::reader::AttributeContent::BootstrapMethods(methods)) = attr.read_content(noak_class.pool()) {
+                for method in methods.methods() {
+                    let method = method.with_context(|| anyhow!("Could not decode method"))?;
+                    let method_ref = noak_class.pool().get(method.method_ref())?;
+                    let reference = noak_class.pool().get(method_ref.reference)?;
+                    println!("  method: {:?} - {:?}", method_ref.kind, reference);
+                    match reference {
+                        noak::reader::cpool::Item::MethodRef(method_ref) => {
+                            let class = noak_class.pool().get(method_ref.class)?;
+
+                            let obf_class_name = noak_class.pool().get(class.name)?.content.to_str().unwrap_or_default();
+                            let instruction_class_map = mappings.map_class(&obf_class_name);
+                            let class_name = instruction_class_map.map(|cm| cm.name.0.as_str()).unwrap_or(obf_class_name);
+
+                            let name_and_type = noak_class.pool().get(method_ref.name_and_type)?;
+                            let name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or_default();
+                            let descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or_default();
+                            println!("  - {name}{descriptor} from class {class_name}", );
+                        },
+                        _ => println!("  - {reference:?}"),
+                    }
+                    for (i, arg) in method.arguments().iter().enumerate() {
+                        let arg = noak_class.pool().get(arg?)?;
+                        print!("   -arg{i}: ");
+                        match arg {
+                            noak::reader::cpool::Item::MethodType(method_type) => {
+                                let descriptor = noak_class.pool().get(method_type.descriptor)?.content.to_str().unwrap_or_default();
+                                let descriptor = mappings.parse_and_map_method_descriptor(descriptor)?;
+                                print!("{descriptor}");
+                            },
+                            noak::reader::cpool::Item::MethodHandle(method_handle) => {
+                                let reference = noak_class.pool().get(method_handle.reference)?;
+                                print!("{:?}->", method_handle.kind);
+                                match reference {
+                                    noak::reader::cpool::Item::MethodRef(method_ref) => {
+                                        let class = noak_class.pool().get(method_ref.class)?;
+                                        let obf_class_name = noak_class.pool().get(class.name)?.content.to_str().unwrap_or("<ERROR>");
+                                        let instruction_class_map = mappings.map_class(&obf_class_name);
+                                        let class_name = instruction_class_map.map(|cm| cm.name.0.as_str()).unwrap_or(obf_class_name);
+
+                                        let name_and_type = noak_class.pool().get(method_ref.name_and_type)?;
+                                        let obf_method_name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or("<ERROR>");
+                                        let obf_method_descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or("<ERROR>");
+                                        let method_descriptor = mappings.parse_and_map_method_descriptor(obf_method_descriptor)?;
+                                
+                                        let method_name = instruction_class_map.and_then(|map|
+                                            map.map_method(obf_method_name, &method_descriptor)
+                                        ).map(|m| m.name.0.as_str()).unwrap_or(obf_method_name);
+
+                                        print!("'{method_name} with types {method_descriptor} on class {class_name}'");
+                                    },
+                                    _ => print!("'{reference:?}'"),
+                                }
+                            },
+                            _ => print!("{arg:?}"),
+                        }
+                        println!();
+                    }
+                }
+            }
+        }
+
         for field in noak_class.fields() {
             let field = field.with_context(|| anyhow!("Could not decode field"))?;
             let field_name = noak_class.pool().get(field.name())?.content.to_str().unwrap_or_default();
@@ -74,7 +117,7 @@ impl MappedClassExtractor {
             let td = mappings.parse_and_map_type_descriptor(field_desc)?;
 
             let mapped = class_map.map_field(field_name, &format!("{td}")).ok_or_else(|| anyhow!("Could not find field '{field_name}' in class '{}'", class_map.name))?;
-            println!("\n{} {}", mapped.ty, mapped.name);
+            println!("\n{} {}", mapped.descriptor, mapped.name);
 
             println!("{:?}", field.access_flags());
             for attr in field.attributes() {
@@ -91,11 +134,10 @@ impl MappedClassExtractor {
             let method_desc = noak_class.pool().get(method.descriptor())?.content.to_str().unwrap_or_default();
 
             let md = mappings.parse_and_map_method_descriptor(method_desc)?;
-            let mapped = class_map.map_method_with_desc(method_name, &md)
+            let mapped = class_map.map_method(method_name, &md)
                 .ok_or_else(|| anyhow!("Could not find method '{method_name}' in class '{}'", class_path))?;
 
-            println!("\n{method_name} -> {} {}({})",
-                mapped.return_type, mapped.name, mapped.arguments.iter().map(|h| h.formatted()).intersperse(",".to_string()).collect::<String>());
+            println!("\n{method_name} -> {}", mapped.descriptor.format_with_name(&mapped.name.0));
 
             println!("{:?}", method.access_flags());
             for attr in method.attributes() {
@@ -150,10 +192,13 @@ impl MappedClassExtractor {
                             },
                             Instr::InvokeDynamic { index } => {
                                 let invoke_dyn = noak_class.pool().get(*index)?;
+
                                 let name_and_type = noak_class.pool().get(invoke_dyn.name_and_type)?;
-                                let name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or_default();
-                                let descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or_default();
-                                println!("{instr:?} - {name}{descriptor}");
+                                let obf_method_name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or("<ERROR>");
+                                let obf_method_descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or("<ERROR>");
+                                let method_descriptor = mappings.parse_and_map_method_descriptor(obf_method_descriptor)?;
+
+                                println!("{instr:?} - call{} {obf_method_name} with types {method_descriptor}", invoke_dyn.bootstrap_method_attr);
                             },
                             Instr::InvokeVirtual { index } => {
                                 let method_ref = noak_class.pool().get(*index)?;
@@ -165,23 +210,23 @@ impl MappedClassExtractor {
                                     .map(ToString::to_string).intersperse(",".to_string()).collect::<String>());
                             },
                             Instr::InvokeInterface { index, count: _ } => {
-                                let interface_method = noak_class.pool().get(*index)?;
+                                let method_ref = noak_class.pool().get(*index)?;
 
-                                let class = noak_class.pool().get(interface_method.class)?;
+                                let class = noak_class.pool().get(method_ref.class)?;
                                 let obf_class_name = noak_class.pool().get(class.name)?.content.to_str().unwrap_or("<ERROR>");
                                 let instruction_class_map = mappings.map_class(&obf_class_name);
                                 let class_name = instruction_class_map.map(|cm| cm.name.0.as_str()).unwrap_or(obf_class_name);
 
-                                let name_and_type = noak_class.pool().get(interface_method.name_and_type)?;
+                                let name_and_type = noak_class.pool().get(method_ref.name_and_type)?;
                                 let obf_method_name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or("<ERROR>");
                                 let obf_method_descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or("<ERROR>");
                                 let method_descriptor = mappings.parse_and_map_method_descriptor(obf_method_descriptor)?;
                                 
                                 let method_name = instruction_class_map.and_then(|map|
-                                    map.map_method_with_desc(obf_method_name, &method_descriptor)
+                                    map.map_method(obf_method_name, &method_descriptor)
                                 ).map(|m| m.name.0.as_str()).unwrap_or(obf_method_name);
 
-                                println!("{instr:?} - {method_name}{method_descriptor} on class {class_name}");
+                                println!("{instr:?} - {method_name} with types {method_descriptor} on class {class_name}");
                             },
                             Instr::InvokeSpecial { index } => {
                                 let invoke_dyn = noak_class.pool().get(*index)?;
@@ -194,10 +239,21 @@ impl MappedClassExtractor {
                                 let item = noak_class.pool().get(*index)?;
                                 match item {
                                     noak::reader::cpool::Item::MethodRef(method_ref) => {
+                                        let class = noak_class.pool().get(method_ref.class)?;
+                                        let obf_class_name = noak_class.pool().get(class.name)?.content.to_str().unwrap_or("<ERROR>");
+                                        let instruction_class_map = mappings.map_class(&obf_class_name);
+                                        let class_name = instruction_class_map.map(|cm| cm.name.0.as_str()).unwrap_or(obf_class_name);
+
                                         let name_and_type = noak_class.pool().get(method_ref.name_and_type)?;
-                                        let name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or_default();
-                                        let descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or_default();
-                                        println!("{instr:?} - {name}{descriptor}", );
+                                        let obf_method_name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or("<ERROR>");
+                                        let obf_method_descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or("<ERROR>");
+                                        let method_descriptor = mappings.parse_and_map_method_descriptor(obf_method_descriptor)?;
+                                
+                                        let method_name = instruction_class_map.and_then(|map|
+                                            map.map_method(obf_method_name, &method_descriptor)
+                                        ).map(|m| m.name.0.as_str()).unwrap_or(obf_method_name);
+
+                                        println!("{instr:?} - {method_name} with types {method_descriptor} on class {class_name}");
                                     },
                                     _ => println!("{instr:?} - {item:?}"),
                                 }
@@ -217,7 +273,7 @@ impl MappedClassExtractor {
 }
 
 impl super::ExtractorKind for MappedClassExtractor {
-    type Output = MappedClass;
+    type Output = ();
 
     fn config(&self) -> super::ExtractorConfig {
         super::ExtractorConfig { store_output_in_cache: false }

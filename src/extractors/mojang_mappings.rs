@@ -1,4 +1,4 @@
-use crate::mappings;
+use crate::{mappings, minijvm};
 
 use std::{ num::ParseIntError, sync::LazyLock };
 
@@ -39,14 +39,25 @@ fn parse_mojmap(mappings: &str) -> Result<mappings::Mappings, nom::Err<nom::erro
     let ident = || alt((
        recognize((ident_start(), many0_count(ident_middle()))),
        recognize((char('<'), many0_count(none_of(">")), char('>'))),
-    )).map(String::from).map(mappings::Ident);
+    )).map(String::from).map(minijvm::Ident);
 
-    let ident_path = || recognize(separated_list1(char('.'), ident())).map(String::from).map(mappings::IdentPath);
+    let ident_path = || recognize(separated_list1(char('.'), ident())).map(String::from).map(minijvm::IdentPath);
 
     let ty = || (
-        ident_path(),
+        alt((
+            tag("byte")   .map(|_| minijvm::TypeDescriptorKind::Byte),
+            tag("char")   .map(|_| minijvm::TypeDescriptorKind::Char),
+            tag("double") .map(|_| minijvm::TypeDescriptorKind::Double),
+            tag("float")  .map(|_| minijvm::TypeDescriptorKind::Float),
+            tag("int")    .map(|_| minijvm::TypeDescriptorKind::Int),
+            tag("long")   .map(|_| minijvm::TypeDescriptorKind::Long),
+            tag("short")  .map(|_| minijvm::TypeDescriptorKind::Short),
+            tag("boolean").map(|_| minijvm::TypeDescriptorKind::Boolean),
+            tag("void")   .map(|_| minijvm::TypeDescriptorKind::Void),
+            ident_path().map(|ident| minijvm::TypeDescriptorKind::Object(ident)),
+        )),
         many0_count(tag("[]")),
-    ).map(|(ident, array_depth)| mappings::Type { ident, array_depth });
+    ).map(|(ty, array_depth)| minijvm::TypeDescriptor { ty, array_depth });
 
     let map_arrow = || tag("->");
 
@@ -58,7 +69,7 @@ fn parse_mojmap(mappings: &str) -> Result<mappings::Mappings, nom::Err<nom::erro
         space(), map_arrow(), space(), ident_path()
     ).map(|h| mappings::Field {
         line_range: h.0,
-        ty: h.1,
+        descriptor: h.1,
         name: h.3,
         obfuscated_name: h.7,
     });
@@ -68,9 +79,11 @@ fn parse_mojmap(mappings: &str) -> Result<mappings::Mappings, nom::Err<nom::erro
         space(), map_arrow(), space(), ident_path()
     ).map(|h| mappings::Method {
         line_range: h.0,
-        return_type: h.1,
         name: h.3,
-        arguments: h.4,
+        descriptor: minijvm::MethodDescriptor {
+            return_type: h.1,
+            args: h.4,
+        },
         obfuscated_name: h.8,
     });
     let item_mapping = || delimited(

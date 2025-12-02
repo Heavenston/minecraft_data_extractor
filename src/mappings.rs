@@ -1,4 +1,7 @@
+use crate::minijvm;
+
 use std::ops::RangeInclusive;
+use anyhow::anyhow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bincode::Encode, bincode::Decode, serde::Serialize, serde::Deserialize)]
 pub enum Brand {
@@ -6,57 +9,24 @@ pub enum Brand {
     Mojmaps,
 }
 
-#[derive(Debug, Clone, derive_more::Display, bincode::Encode, bincode::Decode)]
-pub struct Ident(pub String);
-
-/// Classes names like net.minecraft.network.protocol.Packet
-#[derive(Debug, Clone, derive_more::Display, bincode::Encode, bincode::Decode)]
-pub struct IdentPath(pub String);
-
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
-pub struct Type {
-    pub ident: IdentPath,
-    pub array_depth: usize,
-}
-
-impl Type {
-    /// Returns this type formatted like it would appear in java
-    pub fn formatted(&self) -> String {
-        // FIXME: Pretty expansive for how hot this path is
-        format!("{self}")
-    }
-}
-
-impl std::fmt::Display for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.ident)?;
-        for _ in 0..self.array_depth {
-            write!(f, "[]")?;
-        }
-
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Field {
     pub line_range: Option<RangeInclusive<usize>>,
 
-    pub ty: Type,
-    pub name: IdentPath,
+    pub name: minijvm::IdentPath,
+    pub descriptor: minijvm::TypeDescriptor,
 
-    pub obfuscated_name: IdentPath,
+    pub obfuscated_name: minijvm::IdentPath,
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Method {
     pub line_range: Option<RangeInclusive<usize>>,
 
-    pub return_type: Type,
-    pub name: IdentPath,
-    pub arguments: Vec<Type>,
+    pub name: minijvm::IdentPath,
+    pub descriptor: minijvm::MethodDescriptor,
 
-    pub obfuscated_name: IdentPath,
+    pub obfuscated_name: minijvm::IdentPath,
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode, derive_more::From, derive_more::TryInto)]
@@ -68,13 +38,13 @@ pub enum Item {
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Class {
-    pub name: IdentPath,
-    pub obfuscated_name: IdentPath,
+    pub name: minijvm::IdentPath,
+    pub obfuscated_name: minijvm::IdentPath,
     pub item_mappings: Vec<Item>,
 }
 
 impl Class {
-    pub fn map_field(&self, obfuscated_name: &str, ty: &str) -> Option<&Field> {
+    pub fn map_field(&self, obfuscated_name: &str, type_descriptor: &str) -> Option<&Field> {
         for item in &self.item_mappings {
             let Item::Field(field) = item
             else { continue };
@@ -83,7 +53,7 @@ impl Class {
                 continue;
             }
 
-            if &field.ty.formatted() != ty {
+            if &field.descriptor.to_string() != type_descriptor {
                 continue;
             }
 
@@ -93,10 +63,7 @@ impl Class {
         None
     }
 
-    pub fn map_method<I, T>(&self, obfuscated_name: &str, return_type: &str, args_types: I) -> Option<&Method>
-        where I: Clone + IntoIterator<Item = T>,
-              T: AsRef<str>,
-    {
+    pub fn map_method(&self, obfuscated_name: &str, descriptor: &minijvm::MethodDescriptor) -> Option<&Method> {
         for item in &self.item_mappings {
             let Item::Method(method) = item
             else { continue };
@@ -105,15 +72,7 @@ impl Class {
                 continue;
             }
 
-            if &method.return_type.formatted() != return_type {
-                continue;
-            }
-
-            let type_matches = method.arguments.iter()
-                .zip(args_types.clone())
-                .all(|(a, b)| &a.formatted() == b.as_ref());
-
-            if !type_matches {
+            if &method.descriptor != descriptor {
                 continue;
             }
 
@@ -139,5 +98,23 @@ impl Mappings {
     pub fn get_class(&self, name: &str) -> Option<&Class> {
         self.class_mappings.iter()
             .find(|class| class.name.0 == name)
+    }
+
+    pub fn parse_and_map_type_descriptor(&self, desc: &str) -> anyhow::Result<minijvm::TypeDescriptor> {
+        use nom::Parser as _;
+
+        let (_, obf_d) = nom::combinator::complete(minijvm::TypeDescriptor::parse).parse(desc)
+            .map_err(|e| anyhow!("Type descriptor parse error: {e}"))?;
+
+        Ok(obf_d.to_mapped(self))
+    }
+
+    pub fn parse_and_map_method_descriptor(&self, desc: &str) -> anyhow::Result<minijvm::MethodDescriptor> {
+        use nom::Parser as _;
+
+        let (_, obf_d) = nom::combinator::complete(minijvm::MethodDescriptor::parse).parse(desc)
+            .map_err(|e| anyhow!("Method descriptor parse error: {e}"))?;
+
+        Ok(obf_d.to_mapped(self))
     }
 }

@@ -9,6 +9,7 @@ mod version_client_json;
 mod version_json;
 mod extractors;
 mod mappings;
+mod minijvm;
 
 use std::path::{Path, PathBuf};
 use tokio::{fs, io::AsyncWriteExt};
@@ -33,9 +34,7 @@ fn get_about(long: bool) -> String {
     let mut start = "Extract data from minecraft jars".to_string();
 
     if long {
-        start = start + "\n" + format!("Code hash: {}",
-            &CODE_HASH[..32]
-        ).as_str();
+        start = format!("{start}\nCode hash: {}", &CODE_HASH[..32]);
     }
 
     return start;
@@ -212,6 +211,7 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
 
     let mut manager = extractors::ExtractionManager::new(state, &client_json).await?;
 
+    let _ = manager.extract(extractors::version_json::VersionJsonExtractor).await?;
     let _ = manager.extract(extractors::mapped_class::MappedClassExtractor {
         class: format!("net.minecraft.network.protocol.configuration.ConfigurationProtocols"),
         mappings_brand: mappings::Brand::Mojmaps,

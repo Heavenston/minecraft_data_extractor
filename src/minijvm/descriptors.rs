@@ -1,40 +1,9 @@
+use itertools::Itertools;
+
 use crate::mappings;
-use nom::Parser;
-use anyhow::anyhow;
+use super::*;
 
-pub trait DescriptorsMappingsExt {
-    fn parse_and_map_type_descriptor(&self, desc: &str) -> anyhow::Result<TypeDescriptor>;
-
-    fn parse_and_map_method_descriptor(&self, desc: &str) -> anyhow::Result<MethodDescriptor>;
-}
-
-impl DescriptorsMappingsExt for mappings::Mappings {
-    fn parse_and_map_type_descriptor(&self, desc: &str) -> anyhow::Result<TypeDescriptor> {
-        let (_, obf_d) = nom::combinator::complete(TypeDescriptor::parse).parse(desc)
-            .map_err(|e| anyhow!("Type descriptor parse error: {e}"))?;
-
-        Ok(obf_d.to_mapped(self))
-    }
-
-    fn parse_and_map_method_descriptor(&self, desc: &str) -> anyhow::Result<MethodDescriptor> {
-        let (_, obf_d) = nom::combinator::complete(MethodDescriptor::parse).parse(desc)
-            .map_err(|e| anyhow!("Method descriptor parse error: {e}"))?;
-
-        Ok(obf_d.to_mapped(self))
-    }
-}
-
-pub trait DescriptorsMappingsClassExt {
-    fn map_method_with_desc(&self, method_name: &str, desc: &MethodDescriptor) -> Option<&mappings::Method>;
-}
-
-impl DescriptorsMappingsClassExt for mappings::Class {
-    fn map_method_with_desc(&self, method_name: &str, desc: &MethodDescriptor) -> Option<&mappings::Method> {
-        self.map_method(method_name, &desc.return_type.to_string(), desc.args.iter().map(|h| h.to_string()))
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum TypeDescriptorKind {
     /// B
     Byte,
@@ -55,7 +24,7 @@ pub enum TypeDescriptorKind {
     /// V
     Void,
     /// Ljava/lang/String; -> FieldDescriptor::Object("java.lang.string")
-    Object(String),
+    Object(IdentPath),
 }
 
 impl TypeDescriptorKind {
@@ -83,14 +52,14 @@ impl TypeDescriptorKind {
                 char('L'),
                 recognize(many0_count(none_of(";"))),
                 char(';'),
-            ).map(|o: &str| TypeDescriptorKind::Object(o.replace("/", "."))),
+            ).map(|o: &str| TypeDescriptorKind::Object(IdentPath(o.replace("/", ".")))),
         )).parse(content)
     }
 
     pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Option<Self> {
         Some(match self {
             Self::Object(o) => {
-                Self::Object(mappings.map_class(&o)?.name.0.clone())
+                Self::Object(IdentPath(mappings.map_class(&o.0)?.name.0.clone()))
             },
             other => other.clone(),
         })
@@ -114,14 +83,14 @@ impl std::fmt::Display for TypeDescriptorKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct TypeDescriptor {
     pub ty: TypeDescriptorKind,
     pub array_depth: usize,
 }
 
 impl TypeDescriptor {
-    pub fn parse<'a>(content: &str) -> nom::IResult<&str, Self> {
+    pub fn parse(content: &str) -> nom::IResult<&str, Self> {
         use nom::{ character::char, multi::many0_count, Parser as _ };
 
         (many0_count(char('[')), TypeDescriptorKind::parse)
@@ -146,7 +115,7 @@ impl std::fmt::Display for TypeDescriptor {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct MethodDescriptor {
     pub return_type: TypeDescriptor,
     pub args: Vec<TypeDescriptor>,
@@ -170,6 +139,14 @@ impl MethodDescriptor {
             return_type: self.return_type.to_mapped(mappings),
             args: self.args.iter().map(|ty| ty.to_mapped(mappings)).collect(),
         }
+    }
+
+    pub fn format_with_name(&self, name: &str) -> String {
+        format!("{} {name}({})", self.return_type, self.args.iter()
+            .map(ToString::to_string)
+            .intersperse(",".to_string())
+            .collect::<String>()
+        )
     }
 }
 
