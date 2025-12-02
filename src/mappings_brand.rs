@@ -5,3 +5,6 @@ pub enum MappingsBrand {
     Mojmaps,
 }
 
+pub trait ClassMappings {
+    fn map_method(&self, obfuscated_method_name: &str, signature: &str) -> Option<&str>;
+}

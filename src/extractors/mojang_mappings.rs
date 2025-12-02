@@ -82,22 +82,11 @@ pub struct MojmapMethodMapping {
     pub obfuscated_name: MojmapIdentPath,
 }
 
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode, derive_more::From, derive_more::TryInto)]
+#[try_into(ref)]
 pub enum MojmapItemMapping {
     Field(MojmapFieldMapping),
     Method(MojmapMethodMapping),
-}
-
-impl From<MojmapFieldMapping> for MojmapItemMapping {
-    fn from(field: MojmapFieldMapping) -> Self {
-        Self::Field(field)
-    }
-}
-
-impl From<MojmapMethodMapping> for MojmapItemMapping {
-    fn from(method: MojmapMethodMapping) -> Self {
-        Self::Method(method)
-    }
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
