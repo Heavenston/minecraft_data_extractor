@@ -4,7 +4,7 @@ use nom::Parser as _;
 
 use crate::mappings;
 
-use std::{collections::HashMap, io::Read, ops::Deref, path::Path, sync::Arc};
+use std::{io::Read, path::Path, sync::Arc};
 
 use anyhow::{anyhow, bail, Context};
 use rc_zip_sync::ReadZip as _;
@@ -28,52 +28,6 @@ pub struct MappedClass {
     pub methods: Vec<MappedMethod>,
 }
 
-#[ouroboros::self_referencing]
-struct OwningNoakClass {
-    data: Vec<u8>,
-    #[borrows(data)]
-    #[covariant]
-    class: noak::reader::Class<'this>,
-}
-
-#[ouroboros::self_referencing]
-struct ClassCache {
-    file: std::fs::File,
-    #[borrows(file)]
-    #[covariant]
-    zip_file: rc_zip_sync::ArchiveHandle<'this, std::fs::File>,
-    cache: HashMap<String, Arc<OwningNoakClass>>,
-}
-
-impl ClassCache {
-    fn parse_class(&mut self, obfuscated_class_name: &str) -> anyhow::Result<Arc<OwningNoakClass>> {
-        if let Some(cache) = self.borrow_cache().get(obfuscated_class_name).cloned() {
-            return Ok(cache);
-        }
-
-        let zip_file = self.borrow_zip_file();
-
-        let class_path = obfuscated_class_name.replace(".", "/") + ".class";
-        let Some(version_file_entry) = zip_file.by_name(&class_path)
-        else { bail!("Could not find the class file at {class_path}") };
-        let mut data = Vec::new();
-        version_file_entry.reader().read_to_end(&mut data)
-            .with_context(|| format!("Reading entry of server.jar at {class_path}"))?;
-
-        let owning_noak_class = OwningNoakClassTryBuilder {
-            data,
-            class_builder: |data| noak::reader::Class::new(&data),
-        }.try_build().with_context(|| format!("Reading class at {class_path}"))?;
-        let owning_noak_class = Arc::new(owning_noak_class);
-
-        self.with_cache_mut(|cache| {
-            cache.insert(obfuscated_class_name.to_string(), Arc::clone(&owning_noak_class));
-        });
-
-        Ok(owning_noak_class)
-    }
-}
-
 #[derive(Debug, bincode::Encode)]
 pub struct MappedClassExtractor {
     pub class: String,
@@ -89,14 +43,20 @@ impl MappedClassExtractor {
 
         trace!("Found class {class} at {}", class_map.obfuscated_name);
 
-        let mut class_cache = ClassCacheTryBuilder {
-            file: std::fs::File::open(&*server_jar_path)?,
-            zip_file_builder: |file: &std::fs::File| file.read_zip(),
-            cache: Default::default(),
-        }.try_build()?;
+        let server_jar_file = std::fs::File::open(&*server_jar_path)?;
+        let zip_file = server_jar_file.read_zip()?;
 
-        let noak_class = class_cache.parse_class(class)?;
-        let noak_class = noak_class.borrow_class();
+        let class_path = class_map.obfuscated_name.0.replace(".", "/") + ".class";
+
+        let Some(version_file_entry) = zip_file.by_name(&class_path)
+        else { bail!("Could not find the class file at {class_path}") };
+
+        let mut data = Vec::new();
+        version_file_entry.reader().read_to_end(&mut data)
+            .with_context(|| format!("Reading entry of server.jar at {class_path}"))?;
+
+        let noak_class = noak::reader::Class::new(&data)
+            .with_context(|| format!("Reading class at {class_path}"))?;
 
         print!("class: {}", class_map.name);
 
@@ -133,7 +93,7 @@ impl MappedClassExtractor {
 
             let md = mappings.parse_and_map_method_descriptor(method_desc)?;
             let mapped = class_map.map_method(method_name, &md.return_type.to_string(), md.args.iter().map(|h| h.to_string()))
-                .ok_or_else(|| anyhow!("Could not find method '{method_name}' in class '{}'", class))?;
+                .ok_or_else(|| anyhow!("Could not find method '{method_name}' in class '{}'", class_path))?;
 
             println!("\n{} {}({})",
                 mapped.return_type, mapped.name, mapped.arguments.iter().map(|h| h.formatted()).intersperse(",".to_string()).collect::<String>());
