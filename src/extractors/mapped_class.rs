@@ -1,14 +1,15 @@
 mod descriptors;
 use descriptors::*;
+use nom::Parser as _;
 
-use std::io::Read;
+use crate::mappings;
 
-use anyhow::{bail, Context};
+use std::{io::Read, path::Path, sync::Arc};
+
+use anyhow::{anyhow, bail, Context};
 use rc_zip_sync::ReadZip as _;
 use itertools::Itertools;
-use tracing::{info, trace};
-
-use crate::{extractors::mojang_mappings::MojmapIdentPath, mappings::MappingsBrand};
+use tracing::trace;
 
 pub struct MappedField {
     
@@ -21,49 +22,22 @@ pub struct MappedClass {
 #[derive(Debug, bincode::Encode)]
 pub struct MappedClassExtractor {
     pub class: String,
-    pub mappings: MappingsBrand,
+    pub mappings_brand: mappings::Brand,
 }
 
-impl super::ExtractorKind for MappedClassExtractor {
-    type Output = ();
+impl MappedClassExtractor {
+    fn map_class(mappings: Arc<mappings::Mappings>, server_jar_path: &Path, class: &str) -> anyhow::Result<<Self as super::ExtractorKind>::Output> {
+        let Some(class_map) = mappings.class_mappings.iter()
+            .find(|class_map| &class_map.name.0 == class)
+            .cloned()
+        else { bail!("Could not find class '{class}'") };
 
-    fn config(&self) -> super::ExtractorConfig {
-        super::ExtractorConfig { store_output_in_cache: false }
-    }
-    
-    fn name(&self) -> &'static str {
-        "mapped_class_extractor"
-    }
+        trace!("Found class {class} at {}", class_map.obfuscated_name);
 
-    async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
-        match self.mappings {
-            MappingsBrand::Mojmaps => get_with_mojmaps(manager, &self.class).await,
-        }
-    }
-}
-
-async fn get_with_mojmaps(manager: &mut super::ExtractionManager<'_>, class: &str) -> anyhow::Result<<MappedClassExtractor as super::ExtractorKind>::Output> {
-    let mappings = manager.extract(super::mojang_mappings::MojangMappingsExtractor).await?;
-
-    let Some(class_map) = mappings.class_mappings.iter()
-        .find(|class_map| class_map.name.eq_str(class))
-        .cloned()
-    else { bail!("Could not find class '{class}'") };
-
-    trace!("Found class {class} at {}", class_map.obfuscated_name);
-
-    let server_jar_path = manager.extract(super::server_jar::ServerJarExtractor).await?;
-
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let server_jar_file = std::fs::File::open(&*server_jar_path)?;
         let zip_file = server_jar_file.read_zip()?;
 
-        #[expect(unstable_name_collisions)]
-        let class_path = class_map.obfuscated_name.0.iter()
-            .map(|p| p.0.as_str())
-            .intersperse("/")
-            .chain([".class"])
-            .collect::<String>();
+        let class_path = class_map.obfuscated_name.0.replace(".", "/") + ".class";
 
         let Some(version_file_entry) = zip_file.by_name(&class_path)
         else { bail!("Could not find the class file at {class_path}") };
@@ -78,34 +52,35 @@ async fn get_with_mojmaps(manager: &mut super::ExtractionManager<'_>, class: &st
         println!("Class name: {}", class_map.name);
 
         for field in noak_class.fields() {
-            let field = field?;
+            let field = field.with_context(|| anyhow!("Could not decode field"))?;
             let field_name = noak_class.pool().get(field.name())?.content.to_str().unwrap_or_default();
             let field_desc = noak_class.pool().get(field.descriptor())?.content.to_str().unwrap_or_default();
 
-            let found = class_map.item_mappings.iter()
-                .filter_map(|map| { <&crate::extractors::mojang_mappings::MojmapFieldMapping>::try_from(map).ok() })
-                .filter(|m| m.obfuscated_name.eq_str(field_name))
-                .map(|found| format!("{}", found.name))
-                .collect_vec();
+            let (_, obf_td) = nom::combinator::complete(TypeDescriptor::parse).parse(field_desc)
+                .map_err(|e| anyhow!("Type descriptor parse error: {e}"))?;
+            let td = obf_td.to_mapped(&mappings);
 
-            println!("Field {field_name} aka {}", found.iter().map(String::as_str).intersperse(", ").collect::<String>());
-            println!("  {field_desc}");
+            let mapped = class_map.map_field(field_name, &format!("{td}")).ok_or_else(|| anyhow!("Could not find field '{field_name}' in class '{}'", class_map.name))?;
+            println!("{obf_td} {field_name} -> {} {}", mapped.ty, mapped.name);
         }
 
         for method in noak_class.methods() {
-            let method = method?;
-            let method_name = noak_class.pool().get(method.name())?;
-            let str_name = method_name.content.to_str().unwrap_or_default();
-            let found = class_map.item_mappings.iter()
-                .filter_map(|map| { <&crate::extractors::mojang_mappings::MojmapMethodMapping>::try_from(map).ok() })
-                .filter(|m| m.obfuscated_name.eq_str(str_name))
-                .map(|found| format!("{}", found.name))
-                .collect_vec();
+            let method = method.with_context(|| anyhow!("Could not decode method"))?;
 
-            println!("Real names: {}", found.iter().map(String::as_str).intersperse(", ").collect::<String>());
-            let method_desc = noak_class.pool().get(method.descriptor()).with_context(|| format!("Method desc"))?;
-            let str_desc = method_desc.content.to_str().unwrap_or_default();
-            println!("  desc: {str_desc}");
+            let method_name = noak_class.pool().get(method.name())?.content.to_str().unwrap_or_default();
+            let method_desc = noak_class.pool().get(method.descriptor())?.content.to_str().unwrap_or_default();
+            print!("\n\n{method_name}\n");
+
+            let (_, obf_md) = nom::combinator::complete(MethodDescriptor::parse).parse(method_desc)
+                .map_err(|e| anyhow!("Method descriptor parse error: {e}"))?;
+            let md = obf_md.to_mapped(&mappings);
+
+            let mapped = class_map.map_method(method_name, &md.return_type.to_string(), md.args.iter().map(|h| h.to_string()))
+                .ok_or_else(|| anyhow!("Could not find method '{method_name}' in class '{}'", class_path))?;
+
+            println!("{} {}({}) -> {} {}({})",
+                obf_md.return_type, method_name, obf_md.args.iter().map(|h| h.to_string()).intersperse(",".to_string()).collect::<String>(),
+                mapped.return_type, mapped.name, mapped.arguments.iter().map(|h| h.formatted()).intersperse(",".to_string()).collect::<String>());
 
             for attr in method.attributes() {
                 let Ok(attr) = attr
@@ -128,5 +103,29 @@ async fn get_with_mojmaps(manager: &mut super::ExtractionManager<'_>, class: &st
         println!("Sucessfully read: {noak_class:#?}");
 
         Ok(())
-    }).await?
+    }
+}
+
+impl super::ExtractorKind for MappedClassExtractor {
+    type Output = ();
+
+    fn config(&self) -> super::ExtractorConfig {
+        super::ExtractorConfig { store_output_in_cache: false }
+    }
+    
+    fn name(&self) -> &'static str {
+        "mapped_class_extractor"
+    }
+
+    async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
+        let mappings = match self.mappings_brand {
+            mappings::Brand::Mojmaps => manager.extract(super::mojang_mappings::MojangMappingsExtractor).await?,
+        };
+
+        let server_jar_path = manager.extract(super::server_jar::ServerJarExtractor).await?;
+
+        let class = self.class.clone();
+
+        crate::spawn_cpu_bound(move || Self::map_class(mappings, &server_jar_path, &class)).await?
+    }
 }

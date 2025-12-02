@@ -1,52 +1,33 @@
 use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bincode::Encode, bincode::Decode, serde::Serialize, serde::Deserialize)]
-pub enum MappingsBrand {
+pub enum Brand {
     /// The official mojang-provided mappings
     Mojmaps,
 }
 
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
-pub struct MappingsIdent(pub String);
-
-impl std::fmt::Display for MappingsIdent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+#[derive(Debug, Clone, derive_more::Display, bincode::Encode, bincode::Decode)]
+pub struct Ident(pub String);
 
 /// Classes names like net.minecraft.network.protocol.Packet
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
-pub struct MappingsIdentPath(pub Vec<MappingsIdent>);
-
-impl MappingsIdentPath {
-    pub fn eq_str(&self, other: &str) -> bool {
-        other.split('.')
-            .zip(self.0.iter())
-            .all(|(a, MappingsIdent(b))| a == b)
-    }
-}
-
-impl std::fmt::Display for MappingsIdentPath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut iter = self.0.iter();
-        if let Some(first) = iter.next() {
-            write!(f, "{first}")?;
-        }
-        for other in iter {
-            write!(f, ".{other}")?;
-        }
-        Ok(())
-    }
-}
+#[derive(Debug, Clone, derive_more::Display, bincode::Encode, bincode::Decode)]
+pub struct IdentPath(pub String);
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
-pub struct MappingsType {
-    pub ident: MappingsIdentPath,
+pub struct Type {
+    pub ident: IdentPath,
     pub array_depth: usize,
 }
 
-impl std::fmt::Display for MappingsType {
+impl Type {
+    /// Returns this type formatted like it would appear in java
+    pub fn formatted(&self) -> String {
+        // FIXME: Pretty expansive for how hot this path is
+        format!("{self}")
+    }
+}
+
+impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.ident)?;
         for _ in 0..self.array_depth {
@@ -58,42 +39,101 @@ impl std::fmt::Display for MappingsType {
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
-pub struct MappingsFieldMapping {
+pub struct Field {
     pub line_range: Option<RangeInclusive<usize>>,
 
-    pub ty: MappingsType,
-    pub name: MappingsIdentPath,
+    pub ty: Type,
+    pub name: IdentPath,
 
-    pub obfuscated_name: MappingsIdentPath,
+    pub obfuscated_name: IdentPath,
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
-pub struct MappingsMethodMapping {
+pub struct Method {
     pub line_range: Option<RangeInclusive<usize>>,
 
-    pub return_type: MappingsType,
-    pub name: MappingsIdentPath,
-    pub arguments: Vec<MappingsType>,
+    pub return_type: Type,
+    pub name: IdentPath,
+    pub arguments: Vec<Type>,
 
-    pub obfuscated_name: MappingsIdentPath,
+    pub obfuscated_name: IdentPath,
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode, derive_more::From, derive_more::TryInto)]
 #[try_into(ref)]
-pub enum MappingsItemMapping {
-    Field(MappingsFieldMapping),
-    Method(MappingsMethodMapping),
+pub enum Item {
+    Field(Field),
+    Method(Method),
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
-pub struct MappingsClassMapping {
-    pub name: MappingsIdentPath,
-    pub obfuscated_name: MappingsIdentPath,
-    pub item_mappings: Vec<MappingsItemMapping>,
+pub struct Class {
+    pub name: IdentPath,
+    pub obfuscated_name: IdentPath,
+    pub item_mappings: Vec<Item>,
+}
+
+impl Class {
+    pub fn map_field(&self, obfuscated_name: &str, ty: &str) -> Option<&Field> {
+        for item in &self.item_mappings {
+            let Item::Field(field) = item
+            else { continue };
+
+            if &field.obfuscated_name.0 != obfuscated_name {
+                continue;
+            }
+
+            if &field.ty.formatted() != ty {
+                continue;
+            }
+
+            return Some(field);
+        }
+
+        None
+    }
+
+    pub fn map_method<I, T>(&self, obfuscated_name: &str, return_type: &str, args_types: I) -> Option<&Method>
+        where I: Clone + IntoIterator<Item = T>,
+              T: AsRef<str>,
+    {
+        for item in &self.item_mappings {
+            let Item::Method(method) = item
+            else { continue };
+
+            if &method.obfuscated_name.0 != obfuscated_name {
+                continue;
+            }
+
+            if &method.return_type.formatted() != return_type {
+                continue;
+            }
+
+            let type_matches = method.arguments.iter()
+                .zip(args_types.clone())
+                .all(|(a, b)| &a.formatted() == b.as_ref());
+
+            if !type_matches {
+                continue;
+            }
+
+            return Some(method);
+        }
+
+        None
+    }
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Mappings {
-    pub brand: MappingsBrand,
-    pub class_mappings: Vec<MappingsClassMapping>,
+    pub brand: Brand,
+    pub class_mappings: Vec<Class>,
+}
+
+impl Mappings {
+    pub fn map_class(&self, obfuscated_name: &str) -> Option<&IdentPath> {
+        self.class_mappings.iter()
+            .find(|class| class.obfuscated_name.0 == obfuscated_name)
+            .map(|class| &class.name)
+    }
 }

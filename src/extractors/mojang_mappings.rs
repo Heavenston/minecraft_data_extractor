@@ -1,4 +1,4 @@
-use crate::mappings::*;
+use crate::mappings;
 
 use std::{ num::ParseIntError, sync::LazyLock };
 
@@ -14,11 +14,11 @@ static MOJMAPS_FIRST_VERSION_TIME: LazyLock<chrono::DateTime<chrono::Utc>> = Laz
 
 // Built only with mojang mappings in mind and does not try to follow any kind of
 // specification or standard, may break if there is any kind of change to the mappings
-fn parse_mojmap(mappings: &str) -> Result<Mappings, nom::Err<nom::error::Error<&str>>> {
+fn parse_mojmap(mappings: &str) -> Result<mappings::Mappings, nom::Err<nom::error::Error<&str>>> {
     use nom::{
         branch::alt,
         bytes::tag,
-        character::{ digit1, one_of, satisfy },
+        character::{ digit1, one_of, none_of, satisfy, char },
         combinator::{ opt, recognize },
         multi::{ many0, many0_count, many1_count, separated_list0, separated_list1 },
         sequence::{ delimited, separated_pair },
@@ -26,38 +26,37 @@ fn parse_mojmap(mappings: &str) -> Result<Mappings, nom::Err<nom::error::Error<&
     };
 
     let newline = || (
-        opt(tag("\r")), tag("\n"),
+        opt(char('\r')), char('\n'),
     );
     let space = || many1_count(one_of(" \t"));
 
     let comment = || (
-        tag("#"), many0_count(is_not("\n")), newline(),
+        char('#'), many0_count(is_not("\n")), newline(),
     );
 
     let ident_start = || satisfy(|c: char| c.is_ascii_alphabetic() || "$_".contains(c));
     let ident_middle = || alt((ident_start(), satisfy(|c: char| c.is_ascii_digit() || c == '-')));
     let ident = || alt((
        recognize((ident_start(), many0_count(ident_middle()))),
-       tag("<clinit>"),
-       tag("<init>"),
-    )).map(String::from).map(MappingsIdent);
+       recognize((char('<'), many0_count(none_of(">")), char('>'))),
+    )).map(String::from).map(mappings::Ident);
 
-    let ident_path = || separated_list1(tag("."), ident()).map(MappingsIdentPath);
+    let ident_path = || recognize(separated_list1(char('.'), ident())).map(String::from).map(mappings::IdentPath);
 
     let ty = || (
         ident_path(),
         many0_count(tag("[]")),
-    ).map(|(ident, array_depth)| MappingsType { ident, array_depth });
+    ).map(|(ident, array_depth)| mappings::Type { ident, array_depth });
 
     let map_arrow = || tag("->");
 
-    let line_range = || terminated(separated_pair(digit1(), tag(":"), digit1()), tag(":"))
+    let line_range = || terminated(separated_pair(digit1(), char(':'), digit1()), char(':'))
         .map_res(|(start, end): (&str, &str)| Ok::<_, ParseIntError>(start.parse::<usize>()?..=end.parse::<usize>()?));
 
     let field_mapping = || (
         opt(line_range()), ty(), space(), ident_path(),
         space(), map_arrow(), space(), ident_path()
-    ).map(|h| MappingsFieldMapping {
+    ).map(|h| mappings::Field {
         line_range: h.0,
         ty: h.1,
         name: h.3,
@@ -65,9 +64,9 @@ fn parse_mojmap(mappings: &str) -> Result<Mappings, nom::Err<nom::error::Error<&
     });
     let method_mapping = || (
         opt(line_range()), ty(), space(), ident_path(),
-        delimited(tag("("), separated_list0(tag(","), ty()), tag(")")),
+        delimited(char('('), separated_list0(char(','), ty()), char(')')),
         space(), map_arrow(), space(), ident_path()
-    ).map(|h| MappingsMethodMapping {
+    ).map(|h| mappings::Method {
         line_range: h.0,
         return_type: h.1,
         name: h.3,
@@ -76,15 +75,15 @@ fn parse_mojmap(mappings: &str) -> Result<Mappings, nom::Err<nom::error::Error<&
     });
     let item_mapping = || delimited(
         space(),
-        alt((field_mapping().map(MappingsItemMapping::from), method_mapping().map(MappingsItemMapping::from))),
+        alt((field_mapping().map(mappings::Item::from), method_mapping().map(mappings::Item::from))),
         newline(),
     );
 
     let class_mapping = || (
-        ident_path(), space(), map_arrow(), space(), ident_path(), tag(":"), newline(),
+        ident_path(), space(), map_arrow(), space(), ident_path(), char(':'), newline(),
         many0_count(comment()),
         many0(item_mapping()),
-    ).map(|h| MappingsClassMapping {
+    ).map(|h| mappings::Class {
         name: h.0,
         obfuscated_name: h.4,
         item_mappings: h.8,
@@ -93,12 +92,12 @@ fn parse_mojmap(mappings: &str) -> Result<Mappings, nom::Err<nom::error::Error<&
     let mojmap = || preceded(
         many0_count(comment()),
         many0(class_mapping()),
-    ).map(|class_mappings| Mappings {
-        brand: MappingsBrand::Mojmaps,
+    ).map(|class_mappings| mappings::Mappings {
+        brand: mappings::Brand::Mojmaps,
         class_mappings,
     });
 
-    let (_, mappings): (_, Mappings) = complete(mojmap()).parse(mappings)?;
+    let (_, mappings): (_, mappings::Mappings) = complete(mojmap()).parse(mappings)?;
 
     Ok(mappings)
 }
@@ -106,7 +105,7 @@ fn parse_mojmap(mappings: &str) -> Result<Mappings, nom::Err<nom::error::Error<&
 #[derive(Debug, bincode::Encode)]
 pub struct MojangMappingsExtractor;
 impl super::ExtractorKind for MojangMappingsExtractor {
-    type Output = Mappings;
+    type Output = mappings::Mappings;
 
     fn config(&self) -> super::ExtractorConfig {
         // It is not faster to deserialized the parsed mappings then to
@@ -129,7 +128,7 @@ impl super::ExtractorKind for MojangMappingsExtractor {
         let mappings_path = manager.download_asset("server_mappings").await?;
         let mappings_content = fs::read_to_string(&mappings_path).await?;
 
-        let parsed_mappings = tokio::task::spawn_blocking(move || {
+        let parsed_mappings = crate::spawn_cpu_bound(move || {
             parse_mojmap(&mappings_content)
                 .inspect_err(|e| println!("{e:#?}"))
                 .map_err(|e| anyhow!("Error parsing mojang mappings: {e}"))

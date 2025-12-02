@@ -1,6 +1,8 @@
+use crate::mappings;
+use itertools::Itertools;
 
 #[derive(Debug, Clone)]
-enum TypeDescriptorKind {
+pub enum TypeDescriptorKind {
     /// B
     Byte,
     /// C
@@ -51,6 +53,15 @@ impl TypeDescriptorKind {
             ).map(|o: &str| TypeDescriptorKind::Object(o.replace("/", "."))),
         )).parse(content)
     }
+
+    pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Option<Self> {
+        Some(match self {
+            Self::Object(o) => {
+                Self::Object(mappings.map_class(&o)?.0.clone())
+            },
+            other => other.clone(),
+        })
+    }
 }
 
 impl std::fmt::Display for TypeDescriptorKind {
@@ -71,17 +82,24 @@ impl std::fmt::Display for TypeDescriptorKind {
 }
 
 #[derive(Debug, Clone)]
-struct TypeDescriptor {
-    ty: TypeDescriptorKind,
-    array_depth: usize,
+pub struct TypeDescriptor {
+    pub ty: TypeDescriptorKind,
+    pub array_depth: usize,
 }
 
 impl TypeDescriptor {
-    pub fn parse(content: &str) -> nom::IResult<&str, Self> {
+    pub fn parse<'a>(content: &str) -> nom::IResult<&str, Self> {
         use nom::{ character::char, multi::many0_count, Parser as _ };
 
         (many0_count(char('[')), TypeDescriptorKind::parse)
             .map(|(array_depth, ty)| Self { array_depth, ty }).parse(content)
+    }
+
+    pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Self {
+        Self {
+            ty: self.ty.to_mapped(mappings).unwrap_or_else(|| self.ty.clone()),
+            array_depth: self.array_depth,
+        }
     }
 }
 
@@ -96,9 +114,9 @@ impl std::fmt::Display for TypeDescriptor {
 }
 
 #[derive(Debug, Clone)]
-struct MethodDescriptor {
-    return_type: TypeDescriptor,
-    args: Vec<TypeDescriptor>,
+pub struct MethodDescriptor {
+    pub return_type: TypeDescriptor,
+    pub args: Vec<TypeDescriptor>,
 }
 
 impl MethodDescriptor {
@@ -112,6 +130,13 @@ impl MethodDescriptor {
 
         (delimited(char('('), many0(TypeDescriptor::parse), char(')')), TypeDescriptor::parse)
             .map(|(args, return_type)| Self { args, return_type }).parse(content)
+    }
+
+    pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Self {
+        Self {
+            return_type: self.return_type.to_mapped(mappings),
+            args: self.args.iter().map(|ty| ty.to_mapped(mappings)).collect(),
+        }
     }
 }
 

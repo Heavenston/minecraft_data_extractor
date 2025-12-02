@@ -16,6 +16,17 @@ use tracing::{debug, error, info, warn};
 
 pub const CODE_HASH: &str = env!("CODE_HASH");
 
+/// Like [`tokio::task::spawn_blocking`] but uses rayon instead
+pub async fn spawn_cpu_bound<T: Send + 'static>(f: impl 'static + Send + FnOnce() -> T) -> anyhow::Result<T> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+
+    rayon::spawn(move || {
+        let _ = sender.send(f());
+    });
+
+    Ok(receiver.await?)
+}
+
 fn get_about(long: bool) -> String {
     let mut start = "Extract data from minecraft jars".to_string();
 
@@ -201,7 +212,7 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
 
     let _ = manager.extract(extractors::mapped_class::MappedClassExtractor {
         class: format!("net.minecraft.network.protocol.handshake.ClientIntentionPacket"),
-        mappings: mappings::MappingsBrand::Mojmaps,
+        mappings_brand: mappings::Brand::Mojmaps,
     }).await?;
 
     manager.finish().await?;
@@ -266,7 +277,7 @@ async fn main() -> anyhow::Result<()> {
                         warn!("{:03}/{:03} Version '{}' not supported", counter, selected_versions.len(), version.id);
                     }
                 } else {
-                    error!("{:03}/{:03} Version '{}' error: {e}", counter, selected_versions.len(), version.id);
+                    error!(error = format!("{e:#}"), "{:03}/{:03} Version '{}'", counter, selected_versions.len(), version.id);
                     errors.push(e);
                 },
             }

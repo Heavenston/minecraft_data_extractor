@@ -15,6 +15,7 @@ futures = "0.3.31"
 itertools = "0.14.0"
 noak = "0.6.3"
 nom = "8.0.0"
+rayon = "1.11.0"
 rc-zip = "5.4.1"
 rc-zip-sync = "4.4.2"
 reqwest = { version = "0.12.24", features = ["json", "stream"] }
