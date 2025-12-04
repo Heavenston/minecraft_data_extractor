@@ -105,7 +105,7 @@ pub struct MethodRef {
 pub enum InvokeKind {
     Static,
     Virtual,
-    Interface,
+    Interface { count: u8 },
     Special,
 }
 
@@ -136,9 +136,41 @@ pub enum ConstantValue {
     Null,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub enum MethodKind {
+    GetField,
+    GetStatic,
+    PutField,
+    PutStatic,
+    InvokeVirtual,
+    InvokeStatic,
+    InvokeSpecial,
+    NewInvokeSpecial,
+    InvokeInterface,
+}
+
+impl From<noak::reader::cpool::MethodKind> for MethodKind {
+    fn from(kind: noak::reader::cpool::MethodKind) -> Self {
+        use noak::reader::cpool;
+
+        match kind {
+            cpool::MethodKind::GetField => MethodKind::GetField,
+            cpool::MethodKind::GetStatic => MethodKind::GetStatic,
+            cpool::MethodKind::PutField => MethodKind::PutField,
+            cpool::MethodKind::PutStatic => MethodKind::PutStatic,
+            cpool::MethodKind::InvokeVirtual => MethodKind::InvokeVirtual,
+            cpool::MethodKind::InvokeStatic => MethodKind::InvokeStatic,
+            cpool::MethodKind::InvokeSpecial => MethodKind::InvokeSpecial,
+            cpool::MethodKind::NewInvokeSpecial => MethodKind::NewInvokeSpecial,
+            cpool::MethodKind::InvokeInterface => MethodKind::InvokeInterface,
+        }
+    }
+}
+
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct DynamicCallSite {
     pub bootstrap: MethodRef,
+    pub method_kind: MethodKind,
     pub static_args: Vec<Constant>,
 }
 
@@ -151,11 +183,47 @@ pub enum BinOp {
     Rem,
     GreaterThan,
     LessThan,
+    /// lcmp etc...
+    Cmp,
+
+    BitAnd,
+    BitOr,
+    BitXOr,
+    BitShl,
+    BitShr,
+    BitUShl,
+    BitUShr,
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum UnOp {
     Neg,
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub enum IfOperand {
+    Int,
+    /// Only support Eq and Ne operations
+    Ref,
+    Zero,
+    /// Only support Eq and Ne operations
+    Null,
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub enum IfCmp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub struct GotoCondition {
+    pub operand: IfOperand,
+    pub cmp: IfCmp,
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
@@ -165,19 +233,31 @@ pub enum Instruction {
         count: u8,
         depth: u8,
     },
+    Pop {
+        count: u8,
+    },
+    Swap,
 
     Constant { value: ConstantValue },
     Convert { from: ValueKind, to: ValueKind },
 
     Load { kind: ValueKind, index: u16 },
     Store { kind: ValueKind, index: u16 },
+    IncInt { index: u16, value: i16 },
 
-    // Control flow: branch consumes a boolean int (0/1)
-    BranchIf {
-        offset: i16,
-    },
     Goto {
-        offset: i16,
+        offset: i32,
+        cond: Option<GotoCondition>,
+    },
+    Jsr {
+        offset: i32,
+    },
+    Ret {
+        index: u16,
+    },
+
+    Ldc {
+        constant: Constant,
     },
 
     BinOp {
@@ -199,12 +279,25 @@ pub enum Instruction {
         descriptor: MethodDescriptor,
     },
 
+    GetField {
+        is_static: bool,
+        field: FieldRef,
+    },
+    PutField {
+        is_static: bool,
+        field: FieldRef,
+    },
+
     Return {
         /// If none this instruction returns void
         kind: Option<ValueKind>,
     },
 
     Throw,
+
+    New {
+        class: ClassRef,
+    },
 
     /// Contains the debug format of the instruction
     Unknown(String),
