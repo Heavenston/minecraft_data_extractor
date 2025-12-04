@@ -18,7 +18,7 @@ impl DecompClassExtractor {
     fn decomp_class(server_jar_path: &Path, class: &str) -> anyhow::Result<minijvm::Class> {
         use noak::reader::cpool as cpool;
         use noak::reader::attributes::RawInstruction as RI;
-        use minijvm::{ GotoCondition, IfOperand, IfCmp, BinOp, UnOp, Instruction as MiniInstr, ValueKind as VK, MethodKind, ConstantValue as CV };
+        use minijvm::{ GotoCondition, IfOperand, IfCmp, BinOp, UnOp, Instruction as MiniInstr, ValueKind as VK, ConstantValue as CV };
 
         let _span = tracing::trace_span!("Decompiling class", ?server_jar_path, class);
         let server_jar_file = std::fs::File::open(&*server_jar_path)?;
@@ -83,20 +83,6 @@ impl DecompClassExtractor {
                 _ => {
                     warn!(?item, "Invalid item for method ref");
                     bail!("Invalid item for method ref: {item:?}");
-                },
-            })
-        };
-
-        let constant_value_from_item = |item: &cpool::Item<'_>| -> anyhow::Result<CV> {
-            Ok(match item {
-                cpool::Item::Integer(i) => CV::Int(i.value),
-                cpool::Item::Float(f) => CV::Float(f.value),
-                cpool::Item::Long(l) => CV::Long(l.value),
-                cpool::Item::Double(d) => CV::Double(d.value),
-                cpool::Item::String(s) => CV::String(pool_str!(s.string)?.into()),
-                item => {
-                    warn!(?item, "Invalid item for constant value");
-                    bail!("Invalid item for constant value: {item:?}");
                 },
             })
         };
@@ -413,13 +399,9 @@ impl DecompClassExtractor {
 
 impl super::ExtractorKind for DecompClassExtractor {
     type Output = minijvm::Class;
-
-    fn config(&self) -> super::ExtractorConfig {
-        super::ExtractorConfig { store_output_in_cache: false }
-    }
     
     fn name(&self) -> &'static str {
-        "mapped_class_extractor"
+        "decomp_class_extractor"
     }
 
     async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {

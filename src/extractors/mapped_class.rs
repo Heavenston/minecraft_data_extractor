@@ -1,11 +1,7 @@
-use crate::mappings;
+use crate::{mappings, minijvm};
 
-use std::{io::Read, path::Path, sync::Arc};
-
-use anyhow::{anyhow, bail, Context};
-use rc_zip_sync::ReadZip as _;
-use itertools::Itertools;
-use tracing::trace;
+use anyhow::bail;
+use tracing::warn;
 
 #[derive(Debug, bincode::Encode)]
 pub struct MappedClassExtractor {
@@ -14,270 +10,127 @@ pub struct MappedClassExtractor {
 }
 
 impl MappedClassExtractor {
-    fn map_class(mappings: Arc<mappings::Mappings>, server_jar_path: &Path, class: &str) -> anyhow::Result<<Self as super::ExtractorKind>::Output> {
-        let Some(class_map) = mappings.get_class(class)
-        else { bail!("Could not find class '{class}'") };
+    fn map_instruction(mappings: &mappings::Mappings, _class_map: &mappings::Class, instruction: &minijvm::Instruction) -> minijvm::Instruction {
+        use minijvm::Instruction as Instr;
+        use minijvm::Constant as Const;
 
-        trace!("Found class {class} at {}", class_map.obfuscated_name);
+        let map_class_ref = |class_ref: &minijvm::ClassRef| -> minijvm::ClassRef {
+            minijvm::ClassRef {
+                name: mappings.map_class(&class_ref.name.0)
+                    .map(|class| class.name.clone())
+                    .unwrap_or_else(|| class_ref.name.clone()),
+            }
+        };
+        let map_method_ref = |method_ref: &minijvm::MethodRef| -> minijvm::MethodRef {
+            let Some(mapped_class) = mappings.map_class(&method_ref.class.name.0)
+            else { return method_ref.clone() };
+            let descriptor = method_ref.descriptor.to_mapped(mappings);
+            let name = mapped_class.map_method(&method_ref.name.0, &descriptor)
+                .map(|method| method.name.clone())
+                .unwrap_or_else(|| {
+                    warn!(obfuscated_method_name = %method_ref.name, class_name = %mapped_class.name, obfuscated_class_name = %method_ref.class.name, "Did not find method in mappings");
+                    method_ref.name.clone()
+                });
+            minijvm::MethodRef {
+                class: minijvm::ClassRef { name: mapped_class.name.clone() },
+                name,
+                descriptor,
+            }
+        };
+        let map_field_ref = |field_ref: &minijvm::FieldRef| -> minijvm::FieldRef {
+            let Some(mapped_class) = mappings.map_class(&field_ref.class.name.0)
+            else { return field_ref.clone() };
+            let descriptor = field_ref.descriptor.to_mapped(mappings);
+            let name = mapped_class.map_field(&field_ref.name.0, &descriptor)
+                .map(|field| field.name.clone())
+                .unwrap_or_else(|| {
+                    warn!(obfuscated_field_name = %field_ref.name, class_name = %mapped_class.name, obfuscated_class_name = %field_ref.class.name, "Did not find field in mappings");
+                    field_ref.name.clone()
+                });
+            minijvm::FieldRef {
+                class: minijvm::ClassRef { name: mapped_class.name.clone() },
+                name,
+                descriptor,
+            }
+        };
 
-        let server_jar_file = std::fs::File::open(&*server_jar_path)?;
-        let zip_file = server_jar_file.read_zip()?;
+        match instruction {
+            Instr::Invoke { kind, method } => Instr::Invoke { kind: kind.clone(), method: map_method_ref(method) },
+            Instr::InvokeDynamic { call_site, name, descriptor } => {
+                Instr::InvokeDynamic {
+                    call_site: minijvm::DynamicCallSite {
+                        bootstrap: map_method_ref(&call_site.bootstrap),
+                        method_kind: call_site.method_kind.clone(),
+                        static_args: call_site.static_args.iter()
+                            .map(|constant| match constant {
+                                Const::Class(class_ref) => Const::Class(map_class_ref(class_ref)),
+                                Const::MethodHandle(method_ref) => Const::MethodHandle(map_method_ref(method_ref)),
+                                Const::MethodType(method_descriptor) => Const::MethodType(method_descriptor.to_mapped(mappings)),
 
-        let class_path = class_map.obfuscated_name.0.replace(".", "/") + ".class";
+                                _ => constant.clone(),
+                            })
+                            .collect(),
+                    },
+                    // we dont bother mapping these, presumable minecraft do not
+                    // do custom invoke dynamics so this will be internal java
+                    // method
+                    name: name.clone(),
+                    descriptor: descriptor.clone(),
+                }
+            },
+            Instr::GetField { is_static, field } => Instr::GetField { is_static: *is_static, field: map_field_ref(field) },
+            Instr::PutField { is_static, field } => Instr::PutField { is_static: *is_static, field: map_field_ref(field) },
+            Instr::New { class } => Instr::New { class: map_class_ref(class) },
 
-        let Some(version_file_entry) = zip_file.by_name(&class_path)
-        else { bail!("Could not find the class file at {class_path}") };
-
-        let mut data = Vec::new();
-        version_file_entry.reader().read_to_end(&mut data)
-            .with_context(|| format!("Reading entry of server.jar at {class_path}"))?;
-
-        let noak_class = noak::reader::Class::new(&data)
-            .with_context(|| format!("Reading class at {class_path}"))?;
-
-        print!("class: {}", class_map.name);
-
-        if let Some(sup) = noak_class.super_class().and_then(|sup| noak_class.pool().get(sup).ok()) {
-            let name = noak_class.pool().get(sup.name)?;
-            print!(" extends {}", name.content.to_str().unwrap_or("<error>"));
+            _ => instruction.clone(),
         }
+    }
 
-        println!();
-
-        for attr in noak_class.attributes() {
-            let attr = attr.with_context(|| anyhow!("Could not decode class attribute"))?;
-            println!("Attr: {}", noak_class.pool().get(attr.name())?.content.to_str().unwrap_or_default());
-            if let Ok(noak::reader::AttributeContent::BootstrapMethods(methods)) = attr.read_content(noak_class.pool()) {
-                for method in methods.methods() {
-                    let method = method.with_context(|| anyhow!("Could not decode method"))?;
-                    let method_ref = noak_class.pool().get(method.method_ref())?;
-                    let reference = noak_class.pool().get(method_ref.reference)?;
-                    println!("  method: {:?} - {:?}", method_ref.kind, reference);
-                    match reference {
-                        noak::reader::cpool::Item::MethodRef(method_ref) => {
-                            let class = noak_class.pool().get(method_ref.class)?;
-
-                            let obf_class_name = noak_class.pool().get(class.name)?.content.to_str().unwrap_or_default();
-                            let instruction_class_map = mappings.map_class(&obf_class_name);
-                            let class_name = instruction_class_map.map(|cm| cm.name.0.as_str()).unwrap_or(obf_class_name);
-
-                            let name_and_type = noak_class.pool().get(method_ref.name_and_type)?;
-                            let name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or_default();
-                            let descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or_default();
-                            println!("  - {name}{descriptor} from class {class_name}", );
+    fn map_class(mappings: &mappings::Mappings, class_map: &mappings::Class, class: &minijvm::Class) -> anyhow::Result<minijvm::Class> {
+        Ok(minijvm::Class {
+            name: class_map.name.clone(),
+            super_class: class.super_class.as_ref().map(|super_class| {
+                mappings.map_class(&super_class.0)
+                    .map(|msc| msc.name.clone())
+                    .unwrap_or_else(|| super_class.clone())
+            }),
+            fields: class.fields.iter()
+                .map(|field| {
+                    let descriptor = field.descriptor.to_mapped(mappings);
+                    let name = class_map.map_field(&field.name.0, &descriptor)
+                        .map(|mapped_field| mapped_field.name.clone())
+                        .unwrap_or_else(|| field.name.clone());
+                    minijvm::Field {
+                        access_flags: field.access_flags.clone(),
+                        name,
+                        descriptor,
+                    }
+                })
+                .collect(),
+            methods: class.methods.iter()
+                .map(|method| {
+                    let descriptor = method.descriptor.to_mapped(mappings);
+                    let name = class_map.map_method(&method.name.0, &descriptor)
+                        .map(|mapped_method| mapped_method.name.clone())
+                        .unwrap_or_else(|| method.name.clone());
+                    minijvm::Method {
+                        access_flags: method.access_flags.clone(),
+                        name,
+                        descriptor,
+                        code: minijvm::Code {
+                            instructions: method.code.instructions.iter()
+                                .map(|instr| Self::map_instruction(mappings, class_map, instr))
+                                .collect(),
                         },
-                        _ => println!("  - {reference:?}"),
                     }
-                    for (i, arg) in method.arguments().iter().enumerate() {
-                        let arg = noak_class.pool().get(arg?)?;
-                        print!("   -arg{i}: ");
-                        match arg {
-                            noak::reader::cpool::Item::MethodType(method_type) => {
-                                let descriptor = noak_class.pool().get(method_type.descriptor)?.content.to_str().unwrap_or_default();
-                                let descriptor = mappings.parse_and_map_method_descriptor(descriptor)?;
-                                print!("{descriptor}");
-                            },
-                            noak::reader::cpool::Item::MethodHandle(method_handle) => {
-                                let reference = noak_class.pool().get(method_handle.reference)?;
-                                print!("{:?}->", method_handle.kind);
-                                match reference {
-                                    noak::reader::cpool::Item::MethodRef(method_ref) => {
-                                        let class = noak_class.pool().get(method_ref.class)?;
-                                        let obf_class_name = noak_class.pool().get(class.name)?.content.to_str().unwrap_or("<ERROR>");
-                                        let instruction_class_map = mappings.map_class(&obf_class_name);
-                                        let class_name = instruction_class_map.map(|cm| cm.name.0.as_str()).unwrap_or(obf_class_name);
-
-                                        let name_and_type = noak_class.pool().get(method_ref.name_and_type)?;
-                                        let obf_method_name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or("<ERROR>");
-                                        let obf_method_descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or("<ERROR>");
-                                        let method_descriptor = mappings.parse_and_map_method_descriptor(obf_method_descriptor)?;
-                                
-                                        let method_name = instruction_class_map.and_then(|map|
-                                            map.map_method(obf_method_name, &method_descriptor)
-                                        ).map(|m| m.name.0.as_str()).unwrap_or(obf_method_name);
-
-                                        print!("'{method_name} with types {method_descriptor} on class {class_name}'");
-                                    },
-                                    _ => print!("'{reference:?}'"),
-                                }
-                            },
-                            _ => print!("{arg:?}"),
-                        }
-                        println!();
-                    }
-                }
-            }
-        }
-
-        for field in noak_class.fields() {
-            let field = field.with_context(|| anyhow!("Could not decode field"))?;
-            let field_name = noak_class.pool().get(field.name())?.content.to_str().unwrap_or_default();
-            let field_desc = noak_class.pool().get(field.descriptor())?.content.to_str().unwrap_or_default();
-
-            let td = mappings.parse_and_map_type_descriptor(field_desc)?;
-
-            let mapped = class_map.map_field(field_name, &format!("{td}")).ok_or_else(|| anyhow!("Could not find field '{field_name}' in class '{}'", class_map.name))?;
-            println!("\n{} {}", mapped.descriptor, mapped.name);
-
-            println!("{:?}", field.access_flags());
-            for attr in field.attributes() {
-                let Ok(attr) = attr
-                else { continue };
-                println!("Attr: {}", noak_class.pool().get(attr.name())?.content.to_str().unwrap_or_default());
-            }
-        }
-
-        for method in noak_class.methods() {
-            let method = method.with_context(|| anyhow!("Could not decode method"))?;
-
-            let method_name = noak_class.pool().get(method.name())?.content.to_str().unwrap_or_default();
-            let method_desc = noak_class.pool().get(method.descriptor())?.content.to_str().unwrap_or_default();
-
-            let md = mappings.parse_and_map_method_descriptor(method_desc)?;
-            let mapped = class_map.map_method(method_name, &md)
-                .ok_or_else(|| anyhow!("Could not find method '{method_name}' in class '{}'", class_path))?;
-
-            println!("\n{method_name} -> {}", mapped.descriptor.format_with_name(&mapped.name.0));
-
-            println!("{:?}", method.access_flags());
-            for attr in method.attributes() {
-                let Ok(attr) = attr
-                else { continue };
-                println!("Attr: {}", noak_class.pool().get(attr.name())?.content.to_str().unwrap_or_default());
-
-                if let Ok(noak::reader::AttributeContent::Code(code)) = attr.read_content(noak_class.pool()) {
-                    // Iterate through the instructions
-                    for instruction in code.raw_instructions() {
-                        let (_, instr) = instruction.with_context(|| format!("Instruction decode error"))?;
-                        use noak::reader::attributes::RawInstruction as Instr;
-                        print!("  ");
-                        match &instr {
-                            Instr::GetStatic { index } => {
-                                let field_ref = noak_class.pool().get(*index)?;
-                                let class = noak_class.pool().get(field_ref.class)?;
-
-                                let obf_class_name = noak_class.pool().get(class.name)?.content.to_str().unwrap_or_default();
-                                let instruction_class_map = mappings.map_class(&obf_class_name);
-                                let class_name = instruction_class_map.map(|cm| cm.name.0.as_str()).unwrap_or(obf_class_name);
-
-                                let name_and_type = noak_class.pool().get(field_ref.name_and_type)?;
-                                let obf_field_name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or_default();
-                                let obf_descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or_default();
-                                let field_descriptor = mappings.parse_and_map_type_descriptor(obf_descriptor)?;
-                                // let field_name = instruction_class_map.map_field(obf_name, &field_descriptor.to_string()).map(|f| f.name.0.as_str()).unwrap_or("UNKNOWN");
-                                let field_name = instruction_class_map.map(|class_map| {
-                                    class_map.map_field(obf_field_name, &field_descriptor.to_string()).map(|f| f.name.0.as_str()).unwrap_or("UNKNOWN")
-                                }).unwrap_or(obf_field_name);
-
-                                println!("{instr:?} - {field_descriptor} {field_name} on cass {class_name}");
-                            },
-                            Instr::PutStatic { index } => {
-                                let field_ref = noak_class.pool().get(*index)?;
-                                let class = noak_class.pool().get(field_ref.class)?;
-
-                                let obf_class_name = noak_class.pool().get(class.name)?.content.to_str().unwrap_or_default();
-                                let instruction_class_map = mappings.map_class(&obf_class_name);
-                                let class_name = instruction_class_map.map(|cm| cm.name.0.as_str()).unwrap_or(obf_class_name);
-
-                                let name_and_type = noak_class.pool().get(field_ref.name_and_type)?;
-                                let obf_field_name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or_default();
-                                let obf_descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or_default();
-                                let field_descriptor = mappings.parse_and_map_type_descriptor(obf_descriptor)?;
-                                // let field_name = instruction_class_map.map_field(obf_name, &field_descriptor.to_string()).map(|f| f.name.0.as_str()).unwrap_or("UNKNOWN");
-                                let field_name = instruction_class_map.map(|class_map| {
-                                    class_map.map_field(obf_field_name, &field_descriptor.to_string()).map(|f| f.name.0.as_str()).unwrap_or("UNKNOWN")
-                                }).unwrap_or(obf_field_name);
-
-                                println!("{instr:?} - {field_descriptor} {field_name} on class {class_name}");
-                            },
-                            Instr::InvokeDynamic { index } => {
-                                let invoke_dyn = noak_class.pool().get(*index)?;
-
-                                let name_and_type = noak_class.pool().get(invoke_dyn.name_and_type)?;
-                                let obf_method_name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or("<ERROR>");
-                                let obf_method_descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or("<ERROR>");
-                                let method_descriptor = mappings.parse_and_map_method_descriptor(obf_method_descriptor)?;
-
-                                println!("{instr:?} - call{} {obf_method_name} with types {method_descriptor}", invoke_dyn.bootstrap_method_attr);
-                            },
-                            Instr::InvokeVirtual { index } => {
-                                let method_ref = noak_class.pool().get(*index)?;
-                                let name_and_type = noak_class.pool().get(method_ref.name_and_type)?;
-                                let name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or_default();
-                                let obf_descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or_default();
-                                let descriptor = mappings.parse_and_map_method_descriptor(obf_descriptor)?;
-                                println!("{instr:?} - {} {name}({})", descriptor.return_type, descriptor.args.iter()
-                                    .map(ToString::to_string).intersperse(",".to_string()).collect::<String>());
-                            },
-                            Instr::InvokeInterface { index, count: _ } => {
-                                let method_ref = noak_class.pool().get(*index)?;
-
-                                let class = noak_class.pool().get(method_ref.class)?;
-                                let obf_class_name = noak_class.pool().get(class.name)?.content.to_str().unwrap_or("<ERROR>");
-                                let instruction_class_map = mappings.map_class(&obf_class_name);
-                                let class_name = instruction_class_map.map(|cm| cm.name.0.as_str()).unwrap_or(obf_class_name);
-
-                                let name_and_type = noak_class.pool().get(method_ref.name_and_type)?;
-                                let obf_method_name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or("<ERROR>");
-                                let obf_method_descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or("<ERROR>");
-                                let method_descriptor = mappings.parse_and_map_method_descriptor(obf_method_descriptor)?;
-                                
-                                let method_name = instruction_class_map.and_then(|map|
-                                    map.map_method(obf_method_name, &method_descriptor)
-                                ).map(|m| m.name.0.as_str()).unwrap_or(obf_method_name);
-
-                                println!("{instr:?} - {method_name} with types {method_descriptor} on class {class_name}");
-                            },
-                            Instr::InvokeSpecial { index } => {
-                                let invoke_dyn = noak_class.pool().get(*index)?;
-                                println!("{instr:?} - {invoke_dyn:?}");
-                                // let name_and_type = noak_class.pool().get(invoke_dyn.name_and_type)?;
-                                // let name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or_default();
-                                // let descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or_default();
-                            },
-                            Instr::InvokeStatic { index } => {
-                                let item = noak_class.pool().get(*index)?;
-                                match item {
-                                    noak::reader::cpool::Item::MethodRef(method_ref) => {
-                                        let class = noak_class.pool().get(method_ref.class)?;
-                                        let obf_class_name = noak_class.pool().get(class.name)?.content.to_str().unwrap_or("<ERROR>");
-                                        let instruction_class_map = mappings.map_class(&obf_class_name);
-                                        let class_name = instruction_class_map.map(|cm| cm.name.0.as_str()).unwrap_or(obf_class_name);
-
-                                        let name_and_type = noak_class.pool().get(method_ref.name_and_type)?;
-                                        let obf_method_name = noak_class.pool().get(name_and_type.name)?.content.to_str().unwrap_or("<ERROR>");
-                                        let obf_method_descriptor = noak_class.pool().get(name_and_type.descriptor)?.content.to_str().unwrap_or("<ERROR>");
-                                        let method_descriptor = mappings.parse_and_map_method_descriptor(obf_method_descriptor)?;
-                                
-                                        let method_name = instruction_class_map.and_then(|map|
-                                            map.map_method(obf_method_name, &method_descriptor)
-                                        ).map(|m| m.name.0.as_str()).unwrap_or(obf_method_name);
-
-                                        println!("{instr:?} - {method_name} with types {method_descriptor} on class {class_name}");
-                                    },
-                                    _ => println!("{instr:?} - {item:?}"),
-                                }
-
-                            },
-                            other => println!("{:?}", other),
-                        }
-                    }
-                }
-            }
-        }
-
-        println!("Sucessfully read: {noak_class:#?}");
-
-        Ok(todo!())
+                })
+                .collect(),
+        })
     }
 }
 
 impl super::ExtractorKind for MappedClassExtractor {
-    type Output = ();
-
-    fn config(&self) -> super::ExtractorConfig {
-        super::ExtractorConfig { store_output_in_cache: false }
-    }
+    type Output = minijvm::Class;
     
     fn name(&self) -> &'static str {
         "mapped_class_extractor"
@@ -288,10 +141,15 @@ impl super::ExtractorKind for MappedClassExtractor {
             mappings::Brand::Mojmaps => manager.extract(super::mojang_mappings::MojangMappingsExtractor).await?,
         };
 
-        let server_jar_path = manager.extract(super::server_jar::ServerJarExtractor).await?;
+        let Some(class_map) = mappings.get_class(&self.class)
+        else { bail!("No class with name '{}' in mappings", self.class) };
 
-        let class = self.class.clone();
+        let decomped_class = manager.extract(super::decomp_class::DecompClassExtractor {
+            class: class_map.obfuscated_name.0.clone(),
+        }).await?;
 
-        crate::spawn_cpu_bound(move || Self::map_class(mappings, &server_jar_path, &class)).await?
+        crate::spawn_cpu_bound(move || {
+            Self::map_class(&mappings, mappings.get_class(&self.class).unwrap(), &decomped_class)
+        }).await?
     }
 }

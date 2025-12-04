@@ -13,20 +13,20 @@ pub enum Brand {
 pub struct Field {
     pub line_range: Option<RangeInclusive<usize>>,
 
-    pub name: minijvm::IdentPath,
+    pub name: minijvm::Ident,
     pub descriptor: minijvm::TypeDescriptor,
 
-    pub obfuscated_name: minijvm::IdentPath,
+    pub obfuscated_name: minijvm::Ident,
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Method {
     pub line_range: Option<RangeInclusive<usize>>,
 
-    pub name: minijvm::IdentPath,
+    pub name: minijvm::Ident,
     pub descriptor: minijvm::MethodDescriptor,
 
-    pub obfuscated_name: minijvm::IdentPath,
+    pub obfuscated_name: minijvm::Ident,
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode, derive_more::From, derive_more::TryInto)]
@@ -44,7 +44,7 @@ pub struct Class {
 }
 
 impl Class {
-    pub fn map_field(&self, obfuscated_name: &str, type_descriptor: &str) -> Option<&Field> {
+    pub fn map_field(&self, obfuscated_name: &str, type_descriptor: &minijvm::TypeDescriptor) -> Option<&Field> {
         for item in &self.item_mappings {
             let Item::Field(field) = item
             else { continue };
@@ -53,7 +53,7 @@ impl Class {
                 continue;
             }
 
-            if &field.descriptor.to_string() != type_descriptor {
+            if &field.descriptor != type_descriptor {
                 continue;
             }
 

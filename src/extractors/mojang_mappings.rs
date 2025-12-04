@@ -65,8 +65,8 @@ fn parse_mojmap(mappings: &str) -> Result<mappings::Mappings, nom::Err<nom::erro
         .map_res(|(start, end): (&str, &str)| Ok::<_, ParseIntError>(start.parse::<usize>()?..=end.parse::<usize>()?));
 
     let field_mapping = || (
-        opt(line_range()), ty(), space(), ident_path(),
-        space(), map_arrow(), space(), ident_path()
+        opt(line_range()), ty(), space(), ident(),
+        space(), map_arrow(), space(), ident()
     ).map(|h| mappings::Field {
         line_range: h.0,
         descriptor: h.1,
@@ -74,9 +74,9 @@ fn parse_mojmap(mappings: &str) -> Result<mappings::Mappings, nom::Err<nom::erro
         obfuscated_name: h.7,
     });
     let method_mapping = || (
-        opt(line_range()), ty(), space(), ident_path(),
+        opt(line_range()), ty(), space(), ident(),
         delimited(char('('), separated_list0(char(','), ty()), char(')')),
-        space(), map_arrow(), space(), ident_path()
+        space(), map_arrow(), space(), ident()
     ).map(|h| mappings::Method {
         line_range: h.0,
         name: h.3,

@@ -4,14 +4,16 @@
 mod descriptors;
 pub use descriptors::*;
 
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, bincode::Encode, bincode::Decode)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, derive_more::Display, bincode::Encode, bincode::Decode)]
+#[debug("Ident({_0:?})")]
 pub struct Ident(pub String);
 
 /// Classes names like net.minecraft.network.protocol.Packet
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, bincode::Encode, bincode::Decode)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, derive_more::Display, bincode::Encode, bincode::Decode)]
+#[debug("IdentPath({_0:?})")]
 pub struct IdentPath(pub String);
 
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+#[derive(Clone, bincode::Encode, bincode::Decode)]
 pub struct AccessFlags {
     pub public: bool,
     pub private: bool,
@@ -59,6 +61,73 @@ impl From<noak::AccessFlags> for AccessFlags {
             mandated: value.contains(noak::AccessFlags::MANDATED),
             module: value.contains(noak::AccessFlags::MODULE),
         }
+    }
+}
+
+impl std::fmt::Debug for AccessFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("AccessFlags");
+        if self.public {
+            s.field("public", &self.public);
+        }
+        if self.private {
+            s.field("private", &self.private);
+        }
+        if self.protected {
+            s.field("protected", &self.protected);
+        }
+        if self.static_ {
+            s.field("static_", &self.static_);
+        }
+        if self.final_ {
+            s.field("final_", &self.final_);
+        }
+        if self.super_ {
+            s.field("super_", &self.super_);
+        }
+        if self.synchronized {
+            s.field("synchronized", &self.synchronized);
+        }
+        if self.bridge {
+            s.field("bridge", &self.bridge);
+        }
+        if self.volatile {
+            s.field("volatile", &self.volatile);
+        }
+        if self.varargs {
+            s.field("varargs", &self.varargs);
+        }
+        if self.transient {
+            s.field("transient", &self.transient);
+        }
+        if self.native {
+            s.field("native", &self.native);
+        }
+        if self.interface {
+            s.field("interface", &self.interface);
+        }
+        if self.abstract_ {
+            s.field("abstract_", &self.abstract_);
+        }
+        if self.strict {
+            s.field("strict", &self.strict);
+        }
+        if self.synthetic {
+            s.field("synthetic", &self.synthetic);
+        }
+        if self.annotation {
+            s.field("annotation", &self.annotation);
+        }
+        if self.enum_ {
+            s.field("enum_", &self.enum_);
+        }
+        if self.mandated {
+            s.field("mandated", &self.mandated);
+        }
+        if self.module {
+            s.field("module", &self.module);
+        }
+        s.finish()
     }
 }
 
@@ -303,12 +372,12 @@ pub enum Instruction {
     Unknown(String),
 }
 
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+#[derive(derive_more::Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Code {
     pub instructions: Vec<Instruction>,
 }
 
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+#[derive(derive_more::Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Method {
     pub access_flags: AccessFlags,
     pub name: Ident,

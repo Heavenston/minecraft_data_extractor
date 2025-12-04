@@ -4,7 +4,7 @@ use nom::Finish;
 use crate::mappings;
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum TypeDescriptorKind {
     /// B
     Byte,
@@ -67,6 +67,23 @@ impl TypeDescriptorKind {
     }
 }
 
+impl std::fmt::Debug for TypeDescriptorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeDescriptorKind::Byte => write!(f, "B"),
+            TypeDescriptorKind::Char => write!(f, "C"),
+            TypeDescriptorKind::Double => write!(f, "D"),
+            TypeDescriptorKind::Float => write!(f, "F"),
+            TypeDescriptorKind::Int => write!(f, "I"),
+            TypeDescriptorKind::Long => write!(f, "J"),
+            TypeDescriptorKind::Short => write!(f, "S"),
+            TypeDescriptorKind::Boolean => write!(f, "Z"),
+            TypeDescriptorKind::Void => write!(f, "V"),
+            TypeDescriptorKind::Object(o) => write!(f, "L{};", o.0.replace(".", "/")),
+        }
+    }
+}
+
 impl std::fmt::Display for TypeDescriptorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -84,7 +101,7 @@ impl std::fmt::Display for TypeDescriptorKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct TypeDescriptor {
     pub ty: TypeDescriptorKind,
     pub array_depth: usize,
@@ -112,6 +129,16 @@ impl TypeDescriptor {
     }
 }
 
+impl std::fmt::Debug for TypeDescriptor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for _ in 0..self.array_depth {
+            write!(f, "[")?;
+        }
+        write!(f, "{:?}", self.ty)?;
+        Ok(())
+    }
+}
+
 impl std::fmt::Display for TypeDescriptor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.ty)?;
@@ -122,7 +149,7 @@ impl std::fmt::Display for TypeDescriptor {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct MethodDescriptor {
     pub return_type: TypeDescriptor,
     pub args: Vec<TypeDescriptor>,
@@ -160,6 +187,18 @@ impl MethodDescriptor {
             .intersperse(",".to_string())
             .collect::<String>()
         )
+    }
+}
+
+impl std::fmt::Debug for MethodDescriptor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "(")?;
+        for arg in self.args.iter() {
+            write!(f, "{arg:?}")?;
+        }
+        write!(f, ")")?;
+        write!(f, "{:?}", self.return_type)?;
+        Ok(())
     }
 }
 
