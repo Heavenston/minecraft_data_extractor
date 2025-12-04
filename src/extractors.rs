@@ -3,6 +3,7 @@ pub mod server_jar;
 pub mod version_json;
 pub mod mapped_class;
 pub mod mojang_mappings;
+pub mod decomp_class;
 
 use std::any::Any;
 

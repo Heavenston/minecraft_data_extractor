@@ -1,4 +1,7 @@
+use std::str::FromStr;
+
 use itertools::Itertools;
+use nom::Finish;
 
 use crate::mappings;
 use super::*;
@@ -97,6 +100,12 @@ impl TypeDescriptor {
             .map(|(array_depth, ty)| Self { array_depth, ty }).parse(content)
     }
 
+    pub fn parse_complete(content: &str) -> anyhow::Result<Self> {
+        use nom::{ Parser as _, combinator::complete };
+
+        Ok(complete(Self::parse).parse(content).finish().map(|(_, v)| v).map_err(|e| e.cloned())?)
+    }
+
     pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Self {
         Self {
             ty: self.ty.to_mapped(mappings).unwrap_or_else(|| self.ty.clone()),
@@ -132,6 +141,12 @@ impl MethodDescriptor {
 
         (delimited(char('('), many0(TypeDescriptor::parse), char(')')), TypeDescriptor::parse)
             .map(|(args, return_type)| Self { args, return_type }).parse(content)
+    }
+
+    pub fn parse_complete(content: &str) -> anyhow::Result<Self> {
+        use nom::{ Parser as _, combinator::complete };
+
+        Ok(complete(Self::parse).parse(content).finish().map(|(_, v)| v).map_err(|e| e.cloned())?)
     }
 
     pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Self {

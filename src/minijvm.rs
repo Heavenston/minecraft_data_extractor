@@ -62,6 +62,19 @@ impl From<noak::AccessFlags> for AccessFlags {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub enum ValueKind {
+    Byte,
+    Short,
+    Int,
+    Long,
+    Float,
+    Double,
+    Char,
+    Boolean,
+    Ref,
+}
+
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Field {
     pub access_flags: AccessFlags,
@@ -96,6 +109,7 @@ pub enum InvokeKind {
     Special,
 }
 
+// TODO: Vs ConstantValue?
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum Constant {
     Int(i32),
@@ -109,6 +123,19 @@ pub enum Constant {
     Null,
 }
 
+// TODO: Vs Constant?
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub enum ConstantValue {
+    Byte(i8),
+    Short(i16),
+    Int(i32),
+    Long(i64),
+    Float(f32),
+    Double(f64),
+    String(String),
+    Null,
+}
+
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct DynamicCallSite {
     pub bootstrap: MethodRef,
@@ -116,7 +143,52 @@ pub struct DynamicCallSite {
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    GreaterThan,
+    LessThan,
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub enum UnOp {
+    Neg,
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum Instruction {
+    Noop,
+    Dup {
+        count: u8,
+        depth: u8,
+    },
+
+    Constant { value: ConstantValue },
+    Convert { from: ValueKind, to: ValueKind },
+
+    Load { kind: ValueKind, index: u16 },
+    Store { kind: ValueKind, index: u16 },
+
+    // Control flow: branch consumes a boolean int (0/1)
+    BranchIf {
+        offset: i16,
+    },
+    Goto {
+        offset: i16,
+    },
+
+    BinOp {
+        op: BinOp,
+        value_kind: ValueKind,
+    },
+    UnOp {
+        op: UnOp,
+        value_kind: ValueKind,
+    },
+
     Invoke {
         kind: InvokeKind,
         method: MethodRef,
@@ -126,6 +198,13 @@ pub enum Instruction {
         name: Ident,
         descriptor: MethodDescriptor,
     },
+
+    Return {
+        /// If none this instruction returns void
+        kind: Option<ValueKind>,
+    },
+
+    Throw,
 
     /// Contains the debug format of the instruction
     Unknown(String),
@@ -147,7 +226,7 @@ pub struct Method {
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Class {
     pub name: IdentPath,
-    pub super_class: IdentPath,
+    pub super_class: Option<IdentPath>,
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
 }
