@@ -63,6 +63,16 @@ pub enum Expression {
         is_static: bool,
         field: super::FieldRef,
     },
+
+    /// Comparison used in `if` and loop conditions.
+    ///
+    /// This represents a boolean expression of the form
+    /// `lhs <cmp> rhs`.
+    Compare {
+        cmp: super::IfCmp,
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
@@ -86,6 +96,22 @@ pub enum Statement {
     },
     Throw {
         value: Expression,
+    },
+
+    /// Structured `if` statement with optional `else` branch.
+    If {
+        condition: Expression,
+        then_branch: Vec<Statement>,
+        else_branch: Vec<Statement>,
+    },
+
+    /// Structured `while` loop.
+    ///
+    /// Represents:
+    /// `while (condition) { body }`
+    While {
+        condition: Expression,
+        body: Vec<Statement>,
     },
 }
 

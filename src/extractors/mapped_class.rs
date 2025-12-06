@@ -54,7 +54,17 @@ impl MappedClassExtractor {
             }
         };
 
+        let map_constant = |constant: &minijvm::Constant| -> minijvm::Constant {
+            match constant {
+                Const::Class(class_ref) => Const::Class(map_class_ref(class_ref)),
+                Const::MethodHandle(method_ref) => Const::MethodHandle(map_method_ref(method_ref)),
+                Const::MethodType(method_descriptor) => Const::MethodType(method_descriptor.to_mapped(mappings)),
+                _ => constant.clone(),
+            }
+        };
+
         match instruction {
+            Instr::Ldc { constant } => Instr::Ldc { constant: map_constant(constant) },
             Instr::Invoke { kind, method } => Instr::Invoke { kind: kind.clone(), method: map_method_ref(method) },
             Instr::InvokeDynamic { call_site, name, descriptor } => {
                 Instr::InvokeDynamic {
@@ -62,13 +72,7 @@ impl MappedClassExtractor {
                         bootstrap: map_method_ref(&call_site.bootstrap),
                         method_kind: call_site.method_kind.clone(),
                         static_args: call_site.static_args.iter()
-                            .map(|constant| match constant {
-                                Const::Class(class_ref) => Const::Class(map_class_ref(class_ref)),
-                                Const::MethodHandle(method_ref) => Const::MethodHandle(map_method_ref(method_ref)),
-                                Const::MethodType(method_descriptor) => Const::MethodType(method_descriptor.to_mapped(mappings)),
-
-                                _ => constant.clone(),
-                            })
+                            .map(map_constant)
                             .collect(),
                     },
                     // we dont bother mapping these, presumable minecraft do not

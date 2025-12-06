@@ -1,6 +1,6 @@
 use crate::minijvm;
 
-use std::{ io::Read, path::Path };
+use std::{ collections::HashMap, io::Read, path::Path };
 
 use anyhow::{ anyhow, bail, Context };
 use itertools::Itertools;
@@ -17,7 +17,7 @@ pub struct ReadClassExtractor {
 impl ReadClassExtractor {
     fn read_class(server_jar_path: &Path, class: &str) -> anyhow::Result<minijvm::Class> {
         use noak::reader::cpool as cpool;
-        use noak::reader::attributes::RawInstruction as RI;
+        use noak::reader::attributes::{ RawInstruction as RI, Index as CodeIndex };
         use minijvm::{ GotoCondition, IfOperand, IfCmp, BinOp, UnOp, Instruction as MiniInstr, ValueKind as VK, ConstantValue as CV };
 
         let _span = tracing::trace_span!("Reading class", ?server_jar_path, class);
@@ -160,9 +160,23 @@ impl ReadClassExtractor {
         ;
         
         let convert_code = |code: noak::reader::attributes::Code<'_>| -> anyhow::Result<minijvm::Code> {
-            let mut instructions = Vec::<minijvm::Instruction>::new();
+            // First collect all raw instructions with their byte indices so we
+            // can resolve branch targets to instruction indices.
+            let mut raw_instructions = Vec::<(CodeIndex, RI)>::new();
             for instruction in code.raw_instructions() {
-                let (_, instruction) = try_or!(instruction; orelse continue);
+                let (index, instruction) = try_or!(instruction; orelse continue);
+                raw_instructions.push((index, instruction));
+            }
+
+            // Map from byte index (pc) to instruction index in `raw_instructions`.
+            let mut pc_to_index = HashMap::<i32, usize>::new();
+            for (idx, (pc, _)) in raw_instructions.iter().enumerate() {
+                pc_to_index.insert(pc.as_u32() as i32, idx);
+            }
+
+            let mut instructions = Vec::<minijvm::Instruction>::new();
+            for (idx, (pc, instruction)) in raw_instructions.into_iter().enumerate() {
+                let pc = pc.as_u32() as i32;
 
                 match instruction {
                     RI::AConstNull              => instructions.push(MiniInstr::Constant { value: CV::Null }),
@@ -242,8 +256,22 @@ impl ReadClassExtractor {
                     RI::FSub                    => instructions.push(MiniInstr::BinOp    { op: BinOp::Sub, value_kind: VK::Float }),
                     RI::GetField { index }      => instructions.push(MiniInstr::GetField { is_static: false, field: make_field_ref(pool!(index)?)? }),
                     RI::GetStatic { index }     => instructions.push(MiniInstr::GetField { is_static: true, field: make_field_ref(pool!(index)?)? }),
-                    RI::Goto { offset }         => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: None }),
-                    RI::GotoW { offset }        => instructions.push(MiniInstr::Goto     { offset, cond: None }),
+                    RI::Goto { offset }         => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid goto target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto { offset: target_idx as i32, cond: None });
+                    },
+                    RI::GotoW { offset }        => {
+                        let target_pc = pc + offset;
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid goto_w target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto { offset: target_idx as i32, cond: None });
+                    },
                     RI::I2B                     => instructions.push(MiniInstr::Convert  { from: VK::Int, to: VK::Byte }),
                     RI::I2C                     => instructions.push(MiniInstr::Convert  { from: VK::Int, to: VK::Char }),
                     RI::I2D                     => instructions.push(MiniInstr::Convert  { from: VK::Int, to: VK::Double }),
@@ -260,22 +288,134 @@ impl ReadClassExtractor {
                     RI::IConst4                 => instructions.push(MiniInstr::Constant { value: CV::Int(4) }),
                     RI::IConst5                 => instructions.push(MiniInstr::Constant { value: CV::Int(5) }),
                     RI::IDiv                    => instructions.push(MiniInstr::BinOp    { op: BinOp::Div, value_kind: VK::Int }),
-                    RI::IfACmpEq { offset }     => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Ref, cmp: IfCmp::Eq }) }),
-                    RI::IfACmpNe { offset }     => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Ref, cmp: IfCmp::Ne }) }),
-                    RI::IfICmpEq { offset }     => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Int, cmp: IfCmp::Eq }) }),
-                    RI::IfICmpNe { offset }     => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Int, cmp: IfCmp::Ne }) }),
-                    RI::IfICmpLt { offset }     => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Int, cmp: IfCmp::Lt }) }),
-                    RI::IfICmpGe { offset }     => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Int, cmp: IfCmp::Ge }) }),
-                    RI::IfICmpGt { offset }     => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Int, cmp: IfCmp::Gt }) }),
-                    RI::IfICmpLe { offset }     => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Int, cmp: IfCmp::Le }) }),
-                    RI::IfEq { offset }         => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Zero, cmp: IfCmp::Eq }) }),
-                    RI::IfNe { offset }         => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Zero, cmp: IfCmp::Ne }) }),
-                    RI::IfLt { offset }         => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Zero, cmp: IfCmp::Lt }) }),
-                    RI::IfGe { offset }         => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Zero, cmp: IfCmp::Ge }) }),
-                    RI::IfGt { offset }         => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Zero, cmp: IfCmp::Gt }) }),
-                    RI::IfLe { offset }         => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Zero, cmp: IfCmp::Le }) }),
-                    RI::IfNonNull { offset }    => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Null, cmp: IfCmp::Ne }) }),
-                    RI::IfNull { offset }       => instructions.push(MiniInstr::Goto     { offset: offset.into(), cond: Some(GotoCondition { operand: IfOperand::Null, cmp: IfCmp::Eq }) }),
+                    RI::IfACmpEq { offset }     => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid if_acmpeq target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Ref, cmp: IfCmp::Eq }) });
+                    },
+                    RI::IfACmpNe { offset }     => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid if_acmpne target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Ref, cmp: IfCmp::Ne }) });
+                    },
+                    RI::IfICmpEq { offset }     => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid if_icmpeq target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Int, cmp: IfCmp::Eq }) });
+                    },
+                    RI::IfICmpNe { offset }     => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid if_icmpne target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Int, cmp: IfCmp::Ne }) });
+                    },
+                    RI::IfICmpLt { offset }     => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid if_icmplt target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Int, cmp: IfCmp::Lt }) });
+                    },
+                    RI::IfICmpGe { offset }     => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid if_icmpge target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Int, cmp: IfCmp::Ge }) });
+                    },
+                    RI::IfICmpGt { offset }     => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid if_icmpgt target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Int, cmp: IfCmp::Gt }) });
+                    },
+                    RI::IfICmpLe { offset }     => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid if_icmple target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Int, cmp: IfCmp::Le }) });
+                    },
+                    RI::IfEq { offset }         => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid ifeq target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Zero, cmp: IfCmp::Eq }) });
+                    },
+                    RI::IfNe { offset }         => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid ifne target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Zero, cmp: IfCmp::Ne }) });
+                    },
+                    RI::IfLt { offset }         => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid iflt target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Zero, cmp: IfCmp::Lt }) });
+                    },
+                    RI::IfGe { offset }         => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid ifge target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Zero, cmp: IfCmp::Ge }) });
+                    },
+                    RI::IfGt { offset }         => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid ifgt target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Zero, cmp: IfCmp::Gt }) });
+                    },
+                    RI::IfLe { offset }         => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid ifle target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Zero, cmp: IfCmp::Le }) });
+                    },
+                    RI::IfNonNull { offset }    => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid ifnonnull target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Null, cmp: IfCmp::Ne }) });
+                    },
+                    RI::IfNull { offset }       => {
+                        let target_pc = pc + i32::from(offset);
+                        let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                            warn!(pc, offset, "Invalid ifnull target");
+                            continue;
+                        };
+                        instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Null, cmp: IfCmp::Eq }) });
+                    },
                     RI::IInc { index, value }   => instructions.push(MiniInstr::IncInt   { index: index.into(), value: value.into() }),
                     RI::IIncW { index, value }  => instructions.push(MiniInstr::IncInt   { index: index.into(), value: value.into() }),
                     RI::ILoad { index }         => instructions.push(MiniInstr::Load     { kind: VK::Int, index: index.into() }),
