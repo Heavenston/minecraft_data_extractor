@@ -1,7 +1,7 @@
 use crate::{mappings, minijvm::{self, decomped}};
 
 use anyhow::anyhow;
-use tracing::{debug, warn};
+use tracing::warn;
 use itertools::Itertools;
 
 #[derive(Debug, bincode::Encode)]

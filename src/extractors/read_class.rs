@@ -175,10 +175,17 @@ impl ReadClassExtractor {
             }
 
             let mut instructions = Vec::<minijvm::Instruction>::new();
-            for (idx, (pc, instruction)) in raw_instructions.into_iter().enumerate() {
+            for (pc, instruction) in raw_instructions.into_iter() {
                 let pc = pc.as_u32() as i32;
 
+                macro_rules! unknown { () => {{
+                    warn!(?instruction, "Unknown instruction");
+                    instructions.push(MiniInstr::Unknown(format!("{instruction:?}")));
+                }}; }
+
                 match instruction {
+                    RI::AALoad                  => unknown!(),
+                    RI::AAStore                 => unknown!(),
                     RI::AConstNull              => instructions.push(MiniInstr::Constant { value: CV::Null }),
                     RI::ALoad { index }         => instructions.push(MiniInstr::Load     { kind: VK::Ref, index: index.into() }),
                     RI::ALoadW { index }        => instructions.push(MiniInstr::Load     { kind: VK::Ref, index: index.into() }),
@@ -186,7 +193,9 @@ impl ReadClassExtractor {
                     RI::ALoad1                  => instructions.push(MiniInstr::Load     { kind: VK::Ref, index: 1 }),
                     RI::ALoad2                  => instructions.push(MiniInstr::Load     { kind: VK::Ref, index: 2 }),
                     RI::ALoad3                  => instructions.push(MiniInstr::Load     { kind: VK::Ref, index: 3 }),
+                    RI::ANewArray { .. }        => unknown!(),
                     RI::AReturn                 => instructions.push(MiniInstr::Return   { kind: Some(VK::Ref) }),
+                    RI::ArrayLength             => unknown!(),
                     RI::AStore { index }        => instructions.push(MiniInstr::Store    { kind: VK::Ref, index: index.into() }),
                     RI::AStoreW { index }       => instructions.push(MiniInstr::Store    { kind: VK::Ref, index: index.into() }),
                     RI::AStore0                 => instructions.push(MiniInstr::Store    { kind: VK::Ref, index: 0 }),
@@ -194,11 +203,18 @@ impl ReadClassExtractor {
                     RI::AStore2                 => instructions.push(MiniInstr::Store    { kind: VK::Ref, index: 2 }),
                     RI::AStore3                 => instructions.push(MiniInstr::Store    { kind: VK::Ref, index: 3 }),
                     RI::AThrow                  => instructions.push(MiniInstr::Throw),
+                    RI::BALoad                  => unknown!(),
+                    RI::BAStore                 => unknown!(),
                     RI::BIPush { value }        => instructions.push(MiniInstr::Constant { value: CV::Byte(value) }),
+                    RI::CALoad                  => unknown!(),
+                    RI::CAStore                 => unknown!(),
+                    RI::CheckCast { .. }        => unknown!(),
                     RI::D2F                     => instructions.push(MiniInstr::Convert  { from: VK::Double, to: VK::Float }),
                     RI::D2I                     => instructions.push(MiniInstr::Convert  { from: VK::Double, to: VK::Int   }),
                     RI::D2L                     => instructions.push(MiniInstr::Convert  { from: VK::Double, to: VK::Long  }),
                     RI::DAdd                    => instructions.push(MiniInstr::BinOp    { op: BinOp::Add, value_kind: VK::Double }),
+                    RI::DALoad                  => unknown!(),
+                    RI::DAStore                 => unknown!(),
                     RI::DCmpG                   => instructions.push(MiniInstr::BinOp    { op: BinOp::GreaterThan, value_kind: VK::Double }),
                     RI::DCmpL                   => instructions.push(MiniInstr::BinOp    { op: BinOp::LessThan, value_kind: VK::Double }),
                     RI::DConst0                 => instructions.push(MiniInstr::Constant { value: CV::Double(0.) }),
@@ -231,6 +247,8 @@ impl ReadClassExtractor {
                     RI::F2I                     => instructions.push(MiniInstr::Convert  { from: VK::Float, to: VK::Int   }),
                     RI::F2L                     => instructions.push(MiniInstr::Convert  { from: VK::Float, to: VK::Long  }),
                     RI::FAdd                    => instructions.push(MiniInstr::BinOp    { op: BinOp::Add, value_kind: VK::Float }),
+                    RI::FALoad                  => unknown!(),
+                    RI::FAStore                 => unknown!(),
                     RI::FCmpG                   => instructions.push(MiniInstr::BinOp    { op: BinOp::GreaterThan, value_kind: VK::Float }),
                     RI::FCmpL                   => instructions.push(MiniInstr::BinOp    { op: BinOp::LessThan, value_kind: VK::Float }),
                     RI::FConst0                 => instructions.push(MiniInstr::Constant { value: CV::Float(0.) }),
@@ -279,7 +297,9 @@ impl ReadClassExtractor {
                     RI::I2L                     => instructions.push(MiniInstr::Convert  { from: VK::Int, to: VK::Long }),
                     RI::I2S                     => instructions.push(MiniInstr::Convert  { from: VK::Int, to: VK::Short }),
                     RI::IAdd                    => instructions.push(MiniInstr::BinOp    { op: BinOp::Add, value_kind: VK::Int }),
+                    RI::IALoad                  => unknown!(),
                     RI::IAnd                    => instructions.push(MiniInstr::BinOp    { op: BinOp::BitAnd, value_kind: VK::Int }),
+                    RI::IAStore                 => unknown!(),
                     RI::IConstM1                => instructions.push(MiniInstr::Constant { value: CV::Int(-1) }),
                     RI::IConst0                 => instructions.push(MiniInstr::Constant { value: CV::Int(0) }),
                     RI::IConst1                 => instructions.push(MiniInstr::Constant { value: CV::Int(1) }),
@@ -426,6 +446,7 @@ impl ReadClassExtractor {
                     RI::ILoad3                  => instructions.push(MiniInstr::Load     { kind: VK::Int, index: 3 }),
                     RI::IMul                    => instructions.push(MiniInstr::BinOp    { op: BinOp::Mul, value_kind: VK::Int }),
                     RI::INeg                    => instructions.push(MiniInstr::UnOp     { op: UnOp::Neg, value_kind: VK::Int }),
+                    RI::InstanceOf { .. }       => unknown!(),
                     RI::InvokeDynamic { index } => {
                         let invoke_dyn = pool!(index)?;
                         let name_and_type = pool!(invoke_dyn.name_and_type)?;
@@ -459,7 +480,9 @@ impl ReadClassExtractor {
                     RI::L2F                              => instructions.push(MiniInstr::Convert  { from: VK::Long, to: VK::Float }),
                     RI::L2I                              => instructions.push(MiniInstr::Convert  { from: VK::Long, to: VK::Int }),
                     RI::LAdd                             => instructions.push(MiniInstr::BinOp    { op: BinOp::Add, value_kind: VK::Long }),
+                    RI::LALoad                           => unknown!(),
                     RI::LAnd                             => instructions.push(MiniInstr::BinOp    { op: BinOp::BitAnd, value_kind: VK::Long }),
+                    RI::LAStore                          => unknown!(),
                     RI::LCmp                             => instructions.push(MiniInstr::BinOp    { op: BinOp::Cmp, value_kind: VK::Long }),
                     RI::LConst0                          => instructions.push(MiniInstr::Constant { value: CV::Long(0) }),
                     RI::LConst1                          => instructions.push(MiniInstr::Constant { value: CV::Long(1) }),
@@ -475,6 +498,7 @@ impl ReadClassExtractor {
                     RI::LLoad3                           => instructions.push(MiniInstr::Load     { kind: VK::Long, index: 3 }),
                     RI::LMul                             => instructions.push(MiniInstr::BinOp    { op: BinOp::Mul, value_kind: VK::Long }),
                     RI::LNeg                             => instructions.push(MiniInstr::UnOp     { op: UnOp::Neg, value_kind: VK::Long }),
+                    RI::LookupSwitch(..)                 => unknown!(),
                     RI::LOr                              => instructions.push(MiniInstr::BinOp    { op: BinOp::BitOr, value_kind: VK::Long }),
                     RI::LRem                             => instructions.push(MiniInstr::BinOp    { op: BinOp::Rem, value_kind: VK::Long }),
                     RI::LReturn                          => instructions.push(MiniInstr::Return   { kind: Some(VK::Long) }),
@@ -489,7 +513,11 @@ impl ReadClassExtractor {
                     RI::LSub                             => instructions.push(MiniInstr::BinOp    { op: BinOp::Sub, value_kind: VK::Long }),
                     RI::LUShR                            => instructions.push(MiniInstr::BinOp    { op: BinOp::BitUShr, value_kind: VK::Long }),
                     RI::LXor                             => instructions.push(MiniInstr::BinOp    { op: BinOp::BitXOr, value_kind: VK::Long }),
+                    RI::MonitorEnter                     => unknown!(),
+                    RI::MonitorExit                      => unknown!(),
+                    RI::MultiANewArray { .. }            => unknown!(),
                     RI::New { index }                    => instructions.push(MiniInstr::New      { class: make_class_ref(pool!(index)?)? }),
+                    RI::NewArray { .. }                  => unknown!(),
                     RI::Nop                              => instructions.push(MiniInstr::Noop),
                     RI::Pop                              => instructions.push(MiniInstr::Pop      { count: 1 }),
                     RI::Pop2                             => instructions.push(MiniInstr::Pop      { count: 2 }),
@@ -498,13 +526,11 @@ impl ReadClassExtractor {
                     RI::Ret { index }                    => instructions.push(MiniInstr::Ret      { index: index.into() }),
                     RI::RetW { index }                   => instructions.push(MiniInstr::Ret      { index: index.into() }),
                     RI::Return                           => instructions.push(MiniInstr::Return   { kind: None }),
+                    RI::SALoad                           => unknown!(),
+                    RI::SAStore                          => unknown!(),
                     RI::SIPush { value }                 => instructions.push(MiniInstr::Constant { value: CV::Short(value) }),
                     RI::Swap                             => instructions.push(MiniInstr::Swap),
-
-                    _ => {
-                        warn!(?instruction, "Unknown instruction");
-                        instructions.push(MiniInstr::Unknown(format!("{instruction:?}")));
-                    },
+                    RI::TableSwitch(..)                  => unknown!(),
                 }
             }
             Ok(minijvm::Code { instructions })
