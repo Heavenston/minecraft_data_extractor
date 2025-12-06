@@ -3,6 +3,7 @@
 
 mod descriptors;
 pub use descriptors::*;
+pub mod decomped;
 
 #[derive(derive_more::Debug, Clone, PartialEq, Eq, derive_more::Display, bincode::Encode, bincode::Decode)]
 #[debug("Ident({_0:?})")]
