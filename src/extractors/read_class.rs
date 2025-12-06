@@ -8,19 +8,19 @@ use rc_zip_sync::ReadZip as _;
 use tracing::warn;
 
 #[derive(Debug, bincode::Encode)]
-pub struct DecompClassExtractor {
+pub struct ReadClassExtractor {
     /// The (obfuscated) class name
     /// directly used to find its path
     pub class: String,
 }
 
-impl DecompClassExtractor {
-    fn decomp_class(server_jar_path: &Path, class: &str) -> anyhow::Result<minijvm::Class> {
+impl ReadClassExtractor {
+    fn read_class(server_jar_path: &Path, class: &str) -> anyhow::Result<minijvm::Class> {
         use noak::reader::cpool as cpool;
         use noak::reader::attributes::RawInstruction as RI;
         use minijvm::{ GotoCondition, IfOperand, IfCmp, BinOp, UnOp, Instruction as MiniInstr, ValueKind as VK, ConstantValue as CV };
 
-        let _span = tracing::trace_span!("Decompiling class", ?server_jar_path, class);
+        let _span = tracing::trace_span!("Reading class", ?server_jar_path, class);
         let server_jar_file = std::fs::File::open(&*server_jar_path)?;
         let zip_file = server_jar_file.read_zip()?;
 
@@ -159,7 +159,7 @@ impl DecompClassExtractor {
             .try_collect::<_, Vec<_>, _>()?
         ;
         
-        let decomp_code = |code: noak::reader::attributes::Code<'_>| -> anyhow::Result<minijvm::Code> {
+        let convert_code = |code: noak::reader::attributes::Code<'_>| -> anyhow::Result<minijvm::Code> {
             let mut instructions = Vec::<minijvm::Instruction>::new();
             for instruction in code.raw_instructions() {
                 let (_, instruction) = try_or!(instruction; orelse continue);
@@ -380,7 +380,7 @@ impl DecompClassExtractor {
                 let attr = try_or!(attr; orelse continue);
                 let Ok(noak::reader::AttributeContent::Code(code)) = attr.read_content(noak_class.pool())
                 else { continue };
-                found_code = Some(decomp_code(code)?);
+                found_code = Some(convert_code(code)?);
             }
 
             let name = minijvm::Ident(pool_str!(method.name())?.into());
@@ -397,15 +397,15 @@ impl DecompClassExtractor {
     }
 }
 
-impl super::ExtractorKind for DecompClassExtractor {
+impl super::ExtractorKind for ReadClassExtractor {
     type Output = minijvm::Class;
     
     fn name(&self) -> &'static str {
-        "decomp_class_extractor"
+        "read_class_extractor"
     }
 
     async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
         let server_jar_path = manager.extract(super::server_jar::ServerJarExtractor).await?;
-        crate::spawn_cpu_bound(move || Self::decomp_class(&server_jar_path, &self.class)).await?
+        crate::spawn_cpu_bound(move || Self::read_class(&server_jar_path, &self.class)).await?
     }
 }

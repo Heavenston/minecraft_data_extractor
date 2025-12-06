@@ -144,7 +144,7 @@ impl super::ExtractorKind for MappedClassExtractor {
         let Some(class_map) = mappings.get_class(&self.class)
         else { bail!("No class with name '{}' in mappings", self.class) };
 
-        let decomped_class = manager.extract(super::decomp_class::DecompClassExtractor {
+        let decomped_class = manager.extract(super::read_class::ReadClassExtractor {
             class: class_map.obfuscated_name.0.clone(),
         }).await?;
 
