@@ -1,18 +1,28 @@
 use super::{ Ident, IdentPath, TypeDescriptor, MethodDescriptor, AccessFlags };
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub enum Constant {
+    Byte(i8),
+    Short(i16),
+    Int(i32),
+    Long(i64),
+    Float(f32),
+    Double(f64),
+    String(String),
+    Class(super::ClassRef),
+    MethodHandle(super::MethodRef),
+    MethodType(MethodDescriptor),
+    Null,
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum Expression {
     Constant {
-        value: super::ConstantValue,
+        value: Constant,
     },
     Load {
         value_kind: super::ValueKind,
         index: u16,
-    },
-    Store {
-        value_kind: super::ValueKind,
-        index: u16,
-        value: Box<Expression>,
     },
     BinOp {
         op: super::BinOp,
@@ -32,9 +42,21 @@ pub enum Expression {
         object: Option<Box<Expression>>,
         args: Vec<Expression>,
     },
+    InvokeDynamic {
+        call_site: super::DynamicCallSite,
+        name: Ident,
+        descriptor: super::MethodDescriptor,
+        args: Vec<Expression>,
+    },
 
     New {
         class: super::ClassRef,
+    },
+
+    Convert {
+        from: super::ValueKind,
+        to: super::ValueKind,
+        value: Box<Expression>,
     },
 
     GetField {
@@ -48,9 +70,15 @@ pub enum Statement {
     Expression {
         expr: Expression,
     },
+    Store {
+        value_kind: super::ValueKind,
+        index: u16,
+        value: Expression,
+    },
     PutField {
         is_static: bool,
         field: super::FieldRef,
+        object: Option<Box<Expression>>,
         value: Expression,
     },
     Return {

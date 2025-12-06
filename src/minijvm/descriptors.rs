@@ -4,7 +4,7 @@ use nom::Finish;
 use crate::mappings;
 use super::*;
 
-#[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(Clone, PartialEq, Eq, derive_more::IsVariant, bincode::Encode, bincode::Decode)]
 pub enum TypeDescriptorKind {
     /// B
     Byte,
