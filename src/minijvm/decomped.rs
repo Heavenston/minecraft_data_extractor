@@ -359,7 +359,7 @@ pub struct Method {
 }
 
 impl Method {
-    pub fn printed(&self) -> String {
+    pub fn printed(&self, class_name: &str) -> String {
         let ctx = PrintContext::new(self.access_flags.static_, &self.descriptor.args);
         let modifiers = self.access_flags.printed();
         let args = self.descriptor.args.iter()
@@ -367,7 +367,13 @@ impl Method {
             .map(|(i, ty)| format!("{ty} arg{i}"))
             .collect::<Vec<_>>()
             .join(", ");
-        let mut s = format!("{modifiers}{} {}({args}) {{\n", self.descriptor.return_type, self.name.0);
+
+        let mut s = match self.name.0.as_str() {
+            "<clinit>" => "static {\n".to_string(),
+            "<init>" => format!("{modifiers}{class_name}({args}) {{\n"),
+            _ => format!("{modifiers}{} {}({args}) {{\n", self.descriptor.return_type, self.name.0),
+        };
+
         for stmt in &self.code {
             let _ = writeln!(s, "{}", stmt.printed_indent(&ctx, 1));
         }
@@ -386,11 +392,12 @@ pub struct Class {
 
 impl Class {
     pub fn printed(&self) -> String {
+        let simple_name = self.name.0.rsplit('.').next().unwrap_or(&self.name.0);
         let extends = self.super_class.as_ref()
             .filter(|s| s.0 != "java.lang.Object")
             .map(|s| format!(" extends {}", s.0))
             .unwrap_or_default();
-        let mut s = format!("class {}{extends} {{\n", self.name.0);
+        let mut s = format!("class {simple_name}{extends} {{\n");
         for field in &self.fields {
             let _ = writeln!(s, "    {}", field.printed());
         }
@@ -398,7 +405,7 @@ impl Class {
             s.push('\n');
         }
         for method in &self.methods {
-            for line in method.printed().lines() {
+            for line in method.printed(simple_name).lines() {
                 let _ = writeln!(s, "    {line}");
             }
             s.push('\n');
