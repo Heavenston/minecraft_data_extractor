@@ -225,7 +225,7 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
         class: format!("net.minecraft.network.protocol.PacketFlow"),
         mappings_brand: mappings::Brand::Mojmaps,
     }).await?;
-    println!("{c:#?}");
+    println!("{}", c.printed());
 
     manager.finish().await?;
     

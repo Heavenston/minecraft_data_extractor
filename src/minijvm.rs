@@ -65,6 +65,23 @@ impl From<noak::AccessFlags> for AccessFlags {
     }
 }
 
+impl AccessFlags {
+    pub fn printed(&self) -> String {
+        let mut s = String::new();
+        if self.public { s.push_str("public "); }
+        if self.private { s.push_str("private "); }
+        if self.protected { s.push_str("protected "); }
+        if self.static_ { s.push_str("static "); }
+        if self.final_ { s.push_str("final "); }
+        if self.synchronized { s.push_str("synchronized "); }
+        if self.volatile { s.push_str("volatile "); }
+        if self.transient { s.push_str("transient "); }
+        if self.native { s.push_str("native "); }
+        if self.abstract_ { s.push_str("abstract "); }
+        s
+    }
+}
+
 impl std::fmt::Debug for AccessFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("AccessFlags");
@@ -143,6 +160,22 @@ pub enum ValueKind {
     Char,
     Boolean,
     Ref,
+}
+
+impl ValueKind {
+    pub fn printed(&self) -> &'static str {
+        match self {
+            ValueKind::Byte => "byte",
+            ValueKind::Short => "short",
+            ValueKind::Int => "int",
+            ValueKind::Long => "long",
+            ValueKind::Float => "float",
+            ValueKind::Double => "double",
+            ValueKind::Char => "char",
+            ValueKind::Boolean => "boolean",
+            ValueKind::Ref => "Object",
+        }
+    }
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
@@ -265,9 +298,39 @@ pub enum BinOp {
     BitUShr,
 }
 
+impl BinOp {
+    pub fn printed_with_prec(&self) -> (u8, &'static str) {
+        match self {
+            BinOp::Mul => (70, "*"),
+            BinOp::Div => (70, "/"),
+            BinOp::Rem => (70, "%"),
+            BinOp::Add => (60, "+"),
+            BinOp::Sub => (60, "-"),
+            BinOp::BitShl => (50, "<<"),
+            BinOp::BitShr => (50, ">>"),
+            BinOp::BitUShl => (50, "<<"),
+            BinOp::BitUShr => (50, ">>>"),
+            BinOp::GreaterThan => (40, ">"),
+            BinOp::LessThan => (40, "<"),
+            BinOp::Cmp => (40, "<=>"),
+            BinOp::BitAnd => (35, "&"),
+            BinOp::BitXOr => (34, "^"),
+            BinOp::BitOr => (33, "|"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum UnOp {
     Neg,
+}
+
+impl UnOp {
+    pub fn printed(&self) -> &'static str {
+        match self {
+            UnOp::Neg => "-",
+        }
+    }
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
@@ -288,6 +351,19 @@ pub enum IfCmp {
     Le,
     Gt,
     Ge,
+}
+
+impl IfCmp {
+    pub fn printed(&self) -> &'static str {
+        match self {
+            IfCmp::Eq => "==",
+            IfCmp::Ne => "!=",
+            IfCmp::Lt => "<",
+            IfCmp::Le => "<=",
+            IfCmp::Gt => ">",
+            IfCmp::Ge => ">=",
+        }
+    }
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]

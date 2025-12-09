@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use super::{ Ident, IdentPath, TypeDescriptor, MethodDescriptor, AccessFlags };
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
@@ -13,6 +15,24 @@ pub enum Constant {
     MethodHandle(super::MethodRef),
     MethodType(MethodDescriptor),
     Null,
+}
+
+impl Constant {
+    pub fn printed(&self) -> String {
+        match self {
+            Constant::Byte(v) => format!("(byte){v}"),
+            Constant::Short(v) => format!("(short){v}"),
+            Constant::Int(v) => v.to_string(),
+            Constant::Long(v) => format!("{v}L"),
+            Constant::Float(v) => format!("{v}f"),
+            Constant::Double(v) => v.to_string(),
+            Constant::String(s) => format!("{s:?}"),
+            Constant::Class(c) => format!("{}.class", c.name.0),
+            Constant::MethodHandle(m) => format!("{}::{}", m.class.name.0, m.name.0),
+            Constant::MethodType(d) => format!("{d}"),
+            Constant::Null => "null".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
@@ -66,6 +86,7 @@ pub enum Expression {
     GetField {
         is_static: bool,
         field: super::FieldRef,
+        object: Option<Box<Expression>>,
     },
 
     LoadFromArray {
@@ -98,6 +119,79 @@ pub enum Expression {
         then_value: Box<Expression>,
         else_value: Box<Expression>,
     },
+}
+
+impl Expression {
+    pub fn printed(&self) -> String {
+        self.printed_prec(0)
+    }
+
+    fn printed_prec(&self, parent_prec: u8) -> String {
+        let (prec, s) = self.printed_inner();
+        if prec < parent_prec {
+            format!("({s})")
+        } else {
+            s
+        }
+    }
+
+    fn printed_inner(&self) -> (u8, String) {
+        match self {
+            Expression::Constant { value } => (100, value.printed()),
+            Expression::Load { index, .. } => (100, format!("local_{index}")),
+            Expression::BinOp { op, lhs, rhs, .. } => {
+                let (prec, op_str) = op.printed_with_prec();
+                (prec, format!("{} {op_str} {}", lhs.printed_prec(prec), rhs.printed_prec(prec + 1)))
+            }
+            Expression::UnOp { op, operand, .. } => {
+                let op_str = op.printed();
+                (90, format!("{op_str}{}", operand.printed_prec(90)))
+            }
+            Expression::Invoke { method, object, args, .. } => {
+                let args_str = args.iter().map(|a| a.printed()).collect::<Vec<_>>().join(", ");
+                let s = match object {
+                    Some(obj) => format!("{}.{}({args_str})", obj.printed_prec(100), method.name.0),
+                    None => format!("{}.{}({args_str})", method.class.name.0, method.name.0),
+                };
+                (100, s)
+            }
+            Expression::InvokeDynamic { name, args, .. } => {
+                let args_str = args.iter().map(|a| a.printed()).collect::<Vec<_>>().join(", ");
+                (100, format!("{name}({args_str})"))
+            }
+            Expression::New { class } => (100, format!("new {}", class.name.0)),
+            Expression::NewArray { kind, count } => {
+                (100, format!("new {}[{}]", kind.printed(), count.printed()))
+            }
+            Expression::Convert { to, value, .. } => {
+                (90, format!("({}){}", to.printed(), value.printed_prec(90)))
+            }
+            Expression::GetField { is_static, field, object } => {
+                let target = if *is_static {
+                    field.class.name.0.clone()
+                } else {
+                    object.as_ref().map(|o| o.printed_prec(100)).unwrap_or_else(|| "this".to_string())
+                };
+                (100, format!("{target}.{}", field.name.0))
+            }
+            Expression::LoadFromArray { array, index, .. } => {
+                (100, format!("{}[{}]", array.printed_prec(100), index.printed()))
+            }
+            Expression::ArrayLength { array } => {
+                (100, format!("{}.length", array.printed_prec(100)))
+            }
+            Expression::Cast { class, value } => {
+                (90, format!("({}){}", class.name.0, value.printed_prec(90)))
+            }
+            Expression::Compare { cmp, lhs, rhs } => {
+                let op_str = cmp.printed();
+                (30, format!("{} {op_str} {}", lhs.printed_prec(30), rhs.printed_prec(31)))
+            }
+            Expression::Ternary { condition, then_value, else_value } => {
+                (10, format!("{} ? {} : {}", condition.printed_prec(10), then_value.printed_prec(10), else_value.printed_prec(10)))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
@@ -147,6 +241,65 @@ pub enum Statement {
     },
 }
 
+impl Statement {
+    pub fn printed(&self) -> String {
+        self.printed_indent(0)
+    }
+
+    fn printed_indent(&self, indent: usize) -> String {
+        let ind = "    ".repeat(indent);
+        match self {
+            Statement::Expression { expr } => format!("{ind}{};", expr.printed()),
+            Statement::Store { index, value, .. } => {
+                format!("{ind}local_{index} = {};", value.printed())
+            }
+            Statement::PutField { is_static, field, object, value } => {
+                let target = if *is_static {
+                    format!("{}.{}", field.class.name.0, field.name.0)
+                } else {
+                    match object {
+                        Some(obj) => format!("{}.{}", obj.printed(), field.name.0),
+                        None => format!("this.{}", field.name.0),
+                    }
+                };
+                format!("{ind}{target} = {};", value.printed())
+            }
+            Statement::Return { value } => match value {
+                Some((_, expr)) => format!("{ind}return {};", expr.printed()),
+                None => format!("{ind}return;"),
+            },
+            Statement::Throw { value } => format!("{ind}throw {};", value.printed()),
+            Statement::StoreIntoArray { array, index, value, .. } => {
+                format!("{ind}{}[{}] = {};", array.printed(), index.printed(), value.printed())
+            }
+            Statement::If { condition, then_branch, else_branch } => {
+                let mut s = format!("{ind}if ({}) {{\n", condition.printed());
+                for stmt in then_branch {
+                    let _ = writeln!(s, "{}", stmt.printed_indent(indent + 1));
+                }
+                if else_branch.is_empty() {
+                    write!(s, "{ind}}}").unwrap();
+                } else {
+                    writeln!(s, "{ind}}} else {{").unwrap();
+                    for stmt in else_branch {
+                        let _ = writeln!(s, "{}", stmt.printed_indent(indent + 1));
+                    }
+                    write!(s, "{ind}}}").unwrap();
+                }
+                s
+            }
+            Statement::While { condition, body } => {
+                let mut s = format!("{ind}while ({}) {{\n", condition.printed());
+                for stmt in body {
+                    let _ = writeln!(s, "{}", stmt.printed_indent(indent + 1));
+                }
+                write!(s, "{ind}}}").unwrap();
+                s
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Field {
     pub name: Ident,
@@ -154,6 +307,16 @@ pub struct Field {
     pub access_flags: AccessFlags,
 
     pub init_value: Option<Expression>,
+}
+
+impl Field {
+    pub fn printed(&self) -> String {
+        let modifiers = self.access_flags.printed();
+        let init = self.init_value.as_ref()
+            .map(|v| format!(" = {}", v.printed()))
+            .unwrap_or_default();
+        format!("{modifiers}{} {}{init};", self.descriptor, self.name.0)
+    }
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
@@ -164,10 +327,51 @@ pub struct Method {
     pub code: Vec<Statement>,
 }
 
+impl Method {
+    pub fn printed(&self) -> String {
+        let modifiers = self.access_flags.printed();
+        let args = self.descriptor.args.iter()
+            .enumerate()
+            .map(|(i, ty)| format!("{ty} arg{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut s = format!("{modifiers}{} {}({args}) {{\n", self.descriptor.return_type, self.name.0);
+        for stmt in &self.code {
+            let _ = writeln!(s, "{}", stmt.printed_indent(1));
+        }
+        s.push('}');
+        s
+    }
+}
+
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Class {
     pub name: IdentPath,
     pub super_class: Option<IdentPath>,
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
+}
+
+impl Class {
+    pub fn printed(&self) -> String {
+        let extends = self.super_class.as_ref()
+            .filter(|s| s.0 != "java.lang.Object")
+            .map(|s| format!(" extends {}", s.0))
+            .unwrap_or_default();
+        let mut s = format!("class {}{extends} {{\n", self.name.0);
+        for field in &self.fields {
+            let _ = writeln!(s, "    {}", field.printed());
+        }
+        if !self.fields.is_empty() && !self.methods.is_empty() {
+            s.push('\n');
+        }
+        for method in &self.methods {
+            for line in method.printed().lines() {
+                let _ = writeln!(s, "    {line}");
+            }
+            s.push('\n');
+        }
+        s.push('}');
+        s
+    }
 }
