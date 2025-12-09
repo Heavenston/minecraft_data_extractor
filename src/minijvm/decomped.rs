@@ -68,6 +68,16 @@ pub enum Expression {
         field: super::FieldRef,
     },
 
+    LoadFromArray {
+        kind: super::ValueKind,
+        array: Box<Expression>,
+        index: Box<Expression>,
+    },
+
+    ArrayLength {
+        array: Box<Expression>,
+    },
+
     /// Comparison used in `if` and loop conditions.
     ///
     /// This represents a boolean expression of the form
@@ -99,6 +109,13 @@ pub enum Statement {
         value: Option<(super::ValueKind, Expression)>,
     },
     Throw {
+        value: Expression,
+    },
+
+    StoreIntoArray {
+        kind: super::ValueKind,
+        array: Expression,
+        index: Expression,
         value: Expression,
     },
 

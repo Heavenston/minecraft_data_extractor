@@ -145,13 +145,28 @@ impl DecompClassExtractor {
 
                 match instr {
                     Instr::Noop => {}
-                    Instr::Dup { .. } => unimplemented!(),
+                    Instr::Dup { count, depth } => {
+                        let depth = *depth as usize;
+                        let count = *count as usize;
+                        if stack.len() < depth + count {
+                            return Err(anyhow!("Not enough values on stack for dup"));
+                        }
+                        let start = stack.len() - depth - count;
+                        let to_dup: Vec<_> = stack[start..start + count].to_vec();
+                        stack.extend(to_dup);
+                    }
                     Instr::Pop { count } => {
                         for _ in 0..*count {
                             statements.push(decomped::Statement::Expression { expr: pop!() });
                         }
                     }
-                    Instr::Swap => unimplemented!(),
+                    Instr::Swap => {
+                        let len = stack.len();
+                        if len < 2 {
+                            return Err(anyhow!("Not enough values on stack for swap"));
+                        }
+                        stack.swap(len - 1, len - 2);
+                    }
                     Instr::Constant { value } => {
                         stack.push(decomped::Expression::Constant { value: convert_constant_value(value) });
                     }
@@ -165,12 +180,42 @@ impl DecompClassExtractor {
                     Instr::Store { kind, index } => {
                         statements.push(decomped::Statement::Store { value_kind: kind.clone(), index: *index, value: pop!() });
                     }
-                    Instr::IncInt { .. } => unimplemented!(),
-                    Instr::LoadFromArray { .. } => unimplemented!(),
-                    Instr::StoreIntoArray { .. } => unimplemented!(),
-                    Instr::ArrayLength => unimplemented!(),
-                    Instr::Jsr { .. } => unimplemented!(),
-                    Instr::Ret { .. } => unimplemented!(),
+                    Instr::IncInt { index, value } => {
+                        let load = decomped::Expression::Load { value_kind: minijvm::ValueKind::Int, index: *index };
+                        let increment = decomped::Expression::Constant { value: decomped::Constant::Short(*value) };
+                        let add = decomped::Expression::BinOp {
+                            op: minijvm::BinOp::Add,
+                            value_kind: minijvm::ValueKind::Int,
+                            lhs: Box::new(load),
+                            rhs: Box::new(increment),
+                        };
+                        statements.push(decomped::Statement::Store {
+                            value_kind: minijvm::ValueKind::Int,
+                            index: *index,
+                            value: add,
+                        });
+                    }
+                    Instr::LoadFromArray { kind } => {
+                        let index = Box::new(pop!());
+                        let array = Box::new(pop!());
+                        stack.push(decomped::Expression::LoadFromArray { kind: kind.clone(), array, index });
+                    }
+                    Instr::StoreIntoArray { kind } => {
+                        let value = pop!();
+                        let index = pop!();
+                        let array = pop!();
+                        statements.push(decomped::Statement::StoreIntoArray { kind: kind.clone(), array, index, value });
+                    }
+                    Instr::ArrayLength => {
+                        let array = Box::new(pop!());
+                        stack.push(decomped::Expression::ArrayLength { array });
+                    }
+                    Instr::Jsr { offset } => {
+                        warn!(offset, "Jsr instruction not supported (deprecated)");
+                    }
+                    Instr::Ret { index } => {
+                        warn!(index, "Ret instruction not supported (deprecated)");
+                    }
                     Instr::Ldc { constant } => {
                         stack.push(decomped::Expression::Constant { value: convert_constant(constant) });
                     }
