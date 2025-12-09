@@ -55,7 +55,7 @@ impl ReadClassExtractor {
             let n_and_t = pool!(method_ref.name_and_type)?;
             Ok(minijvm::MethodRef {
                 class: make_class_ref(pool!(method_ref.class)?)?,
-                name: minijvm::Ident(pool_str!(n_and_t.name)?.into()),
+                name: minijvm::Ident::new(pool_str!(n_and_t.name)?),
                 descriptor: minijvm::MethodDescriptor::parse_complete(&pool_str!(n_and_t.descriptor)?)?,
             })
         };
@@ -64,7 +64,7 @@ impl ReadClassExtractor {
             let n_and_t = pool!(interface_method_ref.name_and_type)?;
             Ok(minijvm::MethodRef {
                 class: make_class_ref(pool!(interface_method_ref.class)?)?,
-                name: minijvm::Ident(pool_str!(n_and_t.name)?.into()),
+                name: minijvm::Ident::new(pool_str!(n_and_t.name)?),
                 descriptor: minijvm::MethodDescriptor::parse_complete(&pool_str!(n_and_t.descriptor)?)?,
             })
         };
@@ -73,7 +73,7 @@ impl ReadClassExtractor {
             let n_and_t = pool!(field_ref.name_and_type)?;
             Ok(minijvm::FieldRef {
                 class: make_class_ref(pool!(field_ref.class)?)?,
-                name: minijvm::Ident(pool_str!(n_and_t.name)?.into()),
+                name: minijvm::Ident::new(pool_str!(n_and_t.name)?),
                 descriptor: minijvm::TypeDescriptor::parse_complete(pool_str!(n_and_t.descriptor)?)?,
             })
         };
@@ -122,7 +122,7 @@ impl ReadClassExtractor {
             let field = try_or!(field; orelse continue);
             out_class.fields.push(minijvm::Field {
                 access_flags: minijvm::AccessFlags::from(field.access_flags()),
-                name: minijvm::Ident(pool_str!(field.name())?.into()),
+                name: minijvm::Ident::new(pool_str!(field.name())?),
                 descriptor: minijvm::TypeDescriptor::parse_complete(pool_str!(field.descriptor())?)?,
             });
         }
@@ -454,7 +454,7 @@ impl ReadClassExtractor {
                         let name_and_type = pool!(invoke_dyn.name_and_type)?;
                         instructions.push(MiniInstr::InvokeDynamic {
                             call_site: bootstrap_methods[invoke_dyn.bootstrap_method_attr as usize].clone(),
-                            name: minijvm::Ident(pool_str!(name_and_type.name)?.into()),
+                            name: minijvm::Ident::new(pool_str!(name_and_type.name)?),
                             descriptor: minijvm::MethodDescriptor::parse_complete(pool_str!(name_and_type.descriptor)?)?,
                         });
                     },
@@ -562,7 +562,7 @@ impl ReadClassExtractor {
                 found_code = Some(convert_code(code)?);
             }
 
-            let name = minijvm::Ident(pool_str!(method.name())?.into());
+            let name = minijvm::Ident::new(pool_str!(method.name())?);
             let code = found_code.ok_or_else(|| anyhow!("Could not find code attribute for method {name}"))?;
             out_class.methods.push(minijvm::Method {
                 access_flags: minijvm::AccessFlags::from(method.access_flags()),

@@ -39,7 +39,7 @@ fn parse_mojmap(mappings: &str) -> Result<mappings::Mappings, nom::Err<nom::erro
     let ident = || alt((
        recognize((ident_start(), many0_count(ident_middle()))),
        recognize((char('<'), many0_count(none_of(">")), char('>'))),
-    )).map(String::from).map(minijvm::Ident);
+    )).map(String::from).map(minijvm::Ident::new);
 
     let ident_path = || recognize(separated_list1(char('.'), ident())).map(String::from).map(minijvm::IdentPath::new);
 
