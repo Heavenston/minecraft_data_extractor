@@ -210,7 +210,7 @@ impl ReadClassExtractor {
                     RI::BIPush { value }        => instructions.push(MiniInstr::Constant       { value: CV::Byte(value) }),
                     RI::CALoad                  => instructions.push(MiniInstr::LoadFromArray  { kind: VK::Char }),
                     RI::CAStore                 => instructions.push(MiniInstr::StoreIntoArray { kind: VK::Char }),
-                    RI::CheckCast { .. }        => unknown!(),
+                    RI::CheckCast { index }     => instructions.push(MiniInstr::CheckCast    { class: make_class_ref(pool!(index)?)? }),
                     RI::D2F                     => instructions.push(MiniInstr::Convert        { from: VK::Double, to: VK::Float }),
                     RI::D2I                     => instructions.push(MiniInstr::Convert        { from: VK::Double, to: VK::Int   }),
                     RI::D2L                     => instructions.push(MiniInstr::Convert        { from: VK::Double, to: VK::Long  }),

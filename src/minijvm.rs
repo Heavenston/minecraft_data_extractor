@@ -371,6 +371,7 @@ pub enum Instruction {
 
     New { class: ClassRef },
     NewArray { kind: ValueKind },
+    CheckCast { class: ClassRef },
 
     /// Contains the debug format of the instruction
     Unknown(String),

@@ -78,6 +78,11 @@ pub enum Expression {
         array: Box<Expression>,
     },
 
+    Cast {
+        class: super::ClassRef,
+        value: Box<Expression>,
+    },
+
     /// Comparison used in `if` and loop conditions.
     ///
     /// This represents a boolean expression of the form
