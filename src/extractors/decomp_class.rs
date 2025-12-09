@@ -394,9 +394,7 @@ impl DecompClassExtractor {
 
     fn extract_lambdas_in_expression(expr: &mut decomped::Expression) {
         if let decomped::Expression::InvokeDynamic { call_site, name, args, .. } = expr {
-            if call_site.bootstrap.class.name.0 == "java/lang/invoke/LambdaMetafactory"
-                || call_site.bootstrap.class.name.0 == "java.lang.invoke.LambdaMetafactory"
-            {
+            if call_site.bootstrap.class.name == "java.lang.invoke.LambdaMetafactory" {
                 if let Some(minijvm::Constant::MethodHandle(target)) = call_site.static_args.get(1) {
                     let mut captures = std::mem::take(args);
                     for capture in &mut captures {

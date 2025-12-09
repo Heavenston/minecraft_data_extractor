@@ -16,13 +16,13 @@ impl MappedClassExtractor {
 
         let map_class_ref = |class_ref: &minijvm::ClassRef| -> minijvm::ClassRef {
             minijvm::ClassRef {
-                name: mappings.map_class(&class_ref.name.0)
+                name: mappings.map_class(&class_ref.name)
                     .map(|class| class.name.clone())
                     .unwrap_or_else(|| class_ref.name.clone()),
             }
         };
         let map_method_ref = |method_ref: &minijvm::MethodRef| -> minijvm::MethodRef {
-            let Some(mapped_class) = mappings.map_class(&method_ref.class.name.0)
+            let Some(mapped_class) = mappings.map_class(&method_ref.class.name)
             else { return method_ref.clone() };
             let descriptor = method_ref.descriptor.to_mapped(mappings);
             let name = mapped_class.map_method(&method_ref.name.0, &descriptor)
@@ -38,7 +38,7 @@ impl MappedClassExtractor {
             }
         };
         let map_field_ref = |field_ref: &minijvm::FieldRef| -> minijvm::FieldRef {
-            let Some(mapped_class) = mappings.map_class(&field_ref.class.name.0)
+            let Some(mapped_class) = mappings.map_class(&field_ref.class.name)
             else { return field_ref.clone() };
             let descriptor = field_ref.descriptor.to_mapped(mappings);
             let name = mapped_class.map_field(&field_ref.name.0, &descriptor)
@@ -94,7 +94,7 @@ impl MappedClassExtractor {
         Ok(minijvm::Class {
             name: class_map.name.clone(),
             super_class: class.super_class.as_ref().map(|super_class| {
-                mappings.map_class(&super_class.0)
+                mappings.map_class(&**super_class)
                     .map(|msc| msc.name.clone())
                     .unwrap_or_else(|| super_class.clone())
             }),
@@ -149,7 +149,7 @@ impl super::ExtractorKind for MappedClassExtractor {
         else { bail!("No class with name '{}' in mappings", self.class) };
 
         let decomped_class = manager.extract(super::read_class::ReadClassExtractor {
-            class: class_map.obfuscated_name.0.clone(),
+            class: (&**class_map.obfuscated_name).to_string(),
         }).await?;
 
         crate::spawn_cpu_bound(move || {

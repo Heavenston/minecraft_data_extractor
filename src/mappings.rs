@@ -92,12 +92,12 @@ pub struct Mappings {
 impl Mappings {
     pub fn map_class(&self, obfuscated_name: &str) -> Option<&Class> {
         self.class_mappings.iter()
-            .find(|class| class.obfuscated_name.0 == obfuscated_name)
+            .find(|class| class.obfuscated_name == obfuscated_name)
     }
 
     pub fn get_class(&self, name: &str) -> Option<&Class> {
         self.class_mappings.iter()
-            .find(|class| class.name.0 == name)
+            .find(|class| class.name == name)
     }
 
     pub fn parse_and_map_type_descriptor(&self, desc: &str) -> anyhow::Result<minijvm::TypeDescriptor> {

@@ -2,6 +2,7 @@
 //! using noak's types
 
 mod descriptors;
+
 pub use descriptors::*;
 pub mod decomped;
 
@@ -10,9 +11,51 @@ pub mod decomped;
 pub struct Ident(pub String);
 
 /// Classes names like net.minecraft.network.protocol.Packet
-#[derive(derive_more::Debug, Clone, PartialEq, Eq, derive_more::Display, bincode::Encode, bincode::Decode)]
+#[derive(
+    derive_more::Debug, Clone, PartialEq, Eq, derive_more::Display,
+    derive_more::Deref, derive_more::DerefMut, derive_more::Into,
+    bincode::Encode, bincode::Decode,
+)]
 #[debug("IdentPath({_0:?})")]
-pub struct IdentPath(pub String);
+pub struct IdentPath(String);
+
+impl IdentPath {
+    pub fn new(value: impl Into<String>) -> Self {
+        let str = value.into();
+        assert!(!str.contains('/'));
+        Self(str)
+    }
+}
+
+impl From<String> for IdentPath {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl<'a> From<&'a str> for IdentPath {
+    fn from(value: &'a str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl PartialEq<String> for IdentPath {
+    fn eq(&self, other: &String) -> bool {
+        &self.0 == other
+    }
+}
+
+impl PartialEq<str> for IdentPath {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl<'a> PartialEq<&'a str> for IdentPath {
+    fn eq(&self, other: &&'a str) -> bool {
+        self.0.as_str() == *other
+    }
+}
 
 #[derive(Clone, bincode::Encode, bincode::Decode)]
 pub struct AccessFlags {

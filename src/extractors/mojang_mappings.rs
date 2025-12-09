@@ -41,7 +41,7 @@ fn parse_mojmap(mappings: &str) -> Result<mappings::Mappings, nom::Err<nom::erro
        recognize((char('<'), many0_count(none_of(">")), char('>'))),
     )).map(String::from).map(minijvm::Ident);
 
-    let ident_path = || recognize(separated_list1(char('.'), ident())).map(String::from).map(minijvm::IdentPath);
+    let ident_path = || recognize(separated_list1(char('.'), ident())).map(String::from).map(minijvm::IdentPath::new);
 
     let ty = || (
         alt((

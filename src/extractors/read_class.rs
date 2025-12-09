@@ -48,7 +48,7 @@ impl ReadClassExtractor {
         }
 
         let make_class_ref = |class: &cpool::Class<'_>| -> anyhow::Result<minijvm::ClassRef> {
-            Ok(minijvm::ClassRef { name: minijvm::IdentPath(pool_str!(class.name)?.into()) })
+            Ok(minijvm::ClassRef { name: minijvm::IdentPath::new(pool_str!(class.name)?.replace('/', ".")) })
         };
 
         let make_method_ref = |method_ref: &cpool::MethodRef<'_>| -> anyhow::Result<minijvm::MethodRef> {
@@ -111,8 +111,8 @@ impl ReadClassExtractor {
         let noak_super_class = noak_class.super_class().map(|e| pool!(e)).transpose()?;
 
         let mut out_class = minijvm::Class {
-            name: minijvm::IdentPath(pool_str!(noak_this_class.name)?.into()),
-            super_class: noak_super_class.map(|c| pool_str!(c.name)).transpose()?.map(String::from).map(minijvm::IdentPath),
+            name: minijvm::IdentPath::new(pool_str!(noak_this_class.name)?.replace('/', ".")),
+            super_class: noak_super_class.map(|c| pool_str!(c.name)).transpose()?.map(|s: &str| s.replace('/', ".")).map(minijvm::IdentPath::new),
             fields: Vec::new(),
             methods: Vec::new(),
         };

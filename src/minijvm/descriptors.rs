@@ -53,14 +53,14 @@ impl TypeDescriptorKind {
                 char('L'),
                 recognize(many0_count(none_of(";"))),
                 char(';'),
-            ).map(|o: &str| TypeDescriptorKind::Object(IdentPath(o.replace("/", ".")))),
+            ).map(|o: &str| TypeDescriptorKind::Object(IdentPath::new(o.replace("/", ".")))),
         )).parse(content)
     }
 
     pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Option<Self> {
         Some(match self {
             Self::Object(o) => {
-                Self::Object(IdentPath(mappings.map_class(&o.0)?.name.0.clone()))
+                Self::Object(mappings.map_class(&**o)?.name.clone())
             },
             other => other.clone(),
         })
