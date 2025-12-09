@@ -10,6 +10,42 @@ pub struct DecompClassExtractor {
     pub mappings_brand: mappings::Brand,
 }
 
+fn convert_constant_value(value: &minijvm::ConstantValue) -> decomped::Constant {
+    match value {
+        minijvm::ConstantValue::Byte(v) => decomped::Constant::Byte(*v),
+        minijvm::ConstantValue::Short(v) => decomped::Constant::Short(*v),
+        minijvm::ConstantValue::Int(v) => decomped::Constant::Int(*v),
+        minijvm::ConstantValue::Long(v) => decomped::Constant::Long(*v),
+        minijvm::ConstantValue::Float(v) => decomped::Constant::Float(*v),
+        minijvm::ConstantValue::Double(v) => decomped::Constant::Double(*v),
+        minijvm::ConstantValue::String(v) => decomped::Constant::String(v.clone()),
+        minijvm::ConstantValue::Null => decomped::Constant::Null,
+    }
+}
+
+fn convert_constant(constant: &minijvm::Constant) -> decomped::Constant {
+    match constant {
+        minijvm::Constant::Int(v) => decomped::Constant::Int(*v),
+        minijvm::Constant::Long(v) => decomped::Constant::Long(*v),
+        minijvm::Constant::Float(v) => decomped::Constant::Float(*v),
+        minijvm::Constant::Double(v) => decomped::Constant::Double(*v),
+        minijvm::Constant::String(v) => decomped::Constant::String(v.clone()),
+        minijvm::Constant::Class(class_ref) => decomped::Constant::Class(class_ref.clone()),
+        minijvm::Constant::MethodHandle(method_ref) => decomped::Constant::MethodHandle(method_ref.clone()),
+        minijvm::Constant::MethodType(method_descriptor) => decomped::Constant::MethodType(method_descriptor.clone()),
+        minijvm::Constant::Null => decomped::Constant::Null,
+    }
+}
+
+fn pop_args(stack: &mut Vec<decomped::Expression>, count: usize) -> anyhow::Result<Vec<decomped::Expression>> {
+    if stack.len() < count {
+        return Err(anyhow!("Not enough expressions on stack for arguments"));
+    }
+    let mut args: Vec<_> = stack.drain(stack.len() - count..).collect();
+    args.reverse();
+    Ok(args)
+}
+
 impl DecompClassExtractor {
     fn decomp_code(code: &minijvm::Code) -> anyhow::Result<Vec<decomped::Statement>> {
         use minijvm::Instruction as Instr;
@@ -29,68 +65,50 @@ impl DecompClassExtractor {
             while *pc < end {
                 let instr = &code.instructions[*pc];
 
-                // Handle conditional branches (if / if-else) first.
-                if let Instr::Goto { offset, cond: Some(cond) } = instr {
+                if let Instr::Goto { offset, cond } = instr {
                     let target = *offset as usize;
 
-                    if target > *pc {
-                        // Build the boolean condition expression from the stack.
-                        use minijvm::IfOperand;
+                    if let Some(cond) = cond {
+                        if target <= *pc {
+                            warn!("Encountered backward conditional goto at pc={}", pc);
+                            *pc += 1;
+                            continue;
+                        }
 
-                        let condition = match cond.operand {
-                            IfOperand::Int | IfOperand::Ref => {
-                                let rhs = Box::new(pop!());
-                                let lhs = Box::new(pop!());
-                                decomped::Expression::Compare {
-                                    cmp: cond.cmp.clone(),
-                                    lhs,
-                                    rhs,
-                                }
-                            },
-                            IfOperand::Zero => {
-                                let lhs = Box::new(pop!());
-                                let rhs = Box::new(decomped::Expression::Constant {
-                                    value: decomped::Constant::Int(0),
-                                });
-                                decomped::Expression::Compare {
-                                    cmp: cond.cmp.clone(),
-                                    lhs,
-                                    rhs,
-                                }
-                            },
-                            IfOperand::Null => {
-                                let lhs = Box::new(pop!());
-                                let rhs = Box::new(decomped::Expression::Constant {
-                                    value: decomped::Constant::Null,
-                                });
-                                decomped::Expression::Compare {
-                                    cmp: cond.cmp.clone(),
-                                    lhs,
-                                    rhs,
-                                }
-                            },
+                        let rhs_const = match cond.operand {
+                            minijvm::IfOperand::Zero => Some(decomped::Constant::Int(0)),
+                            minijvm::IfOperand::Null => Some(decomped::Constant::Null),
+                            _ => None,
+                        };
+
+                        let (lhs, rhs) = if let Some(c) = rhs_const {
+                            (pop!(), decomped::Expression::Constant { value: c })
+                        } else {
+                            let r = pop!();
+                            let l = pop!();
+                            (l, r)
+                        };
+
+                        let condition = decomped::Expression::Compare {
+                            cmp: cond.cmp.clone(),
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
                         };
 
                         let then_start = *pc + 1;
 
-                        // Detect an `if-then-else` pattern:
-                        //   if (cond) goto else;
-                        //   then...
-                        //   goto end;
-                        // else:
-                        //   else...
-                        // end:
-                        let mut then_goto: Option<(usize, usize)> = None;
-                        let mut i = then_start;
-                        while i < target {
-                            if let Instr::Goto { offset: end_off, cond: None } = &code.instructions[i] {
-                                then_goto = Some((i, *end_off as usize));
-                            }
-                            i += 1;
-                        }
+                        let then_goto = (then_start..target)
+                            .filter(|&i| matches!(code.instructions[i], Instr::Goto { cond: None, .. }))
+                            .last()
+                            .and_then(|i| {
+                                if let Instr::Goto { offset, cond: None } = &code.instructions[i] {
+                                    Some((i, *offset as usize))
+                                } else {
+                                    None
+                                }
+                            });
 
-                        if let Some((then_goto_idx, end_idx)) = then_goto {
-                            // if with else
+                        let (then_branch, else_branch, next_pc) = if let Some((then_goto_idx, end_idx)) = then_goto {
                             let mut then_pc = then_start;
                             let mut then_stack = stack.clone();
                             let then_branch = decomp_block(code, &mut then_pc, then_goto_idx, &mut then_stack)?;
@@ -99,94 +117,54 @@ impl DecompClassExtractor {
                             let mut else_stack = stack.clone();
                             let else_branch = decomp_block(code, &mut else_pc, end_idx, &mut else_stack)?;
 
-                            statements.push(decomped::Statement::If {
-                                condition,
-                                then_branch,
-                                else_branch,
-                            });
-
-                            // Advance PC to the end of the if/else.
-                            *pc = end_idx;
-
-                            // Try to keep stack consistent if both branches
-                            // produced the same stack height.
-                            if then_stack.len() == stack.len() && else_stack.len() == stack.len() {
+                            if then_stack.len() == stack.len() {
                                 *stack = then_stack;
                             }
 
-                            continue;
+                            (then_branch, else_branch, end_idx)
                         } else {
-                            // Simple if without else: fall-through is the "else".
                             let mut then_pc = then_start;
                             let mut then_stack = stack.clone();
                             let then_branch = decomp_block(code, &mut then_pc, target, &mut then_stack)?;
-
-                            statements.push(decomped::Statement::If {
-                                condition,
-                                then_branch,
-                                else_branch: Vec::new(),
-                            });
-
-                            *pc = target;
 
                             if then_stack.len() == stack.len() {
                                 *stack = then_stack;
                             }
 
-                            continue;
-                        }
-                    } else {
-                        // Backwards conditional jumps (loops) are not yet structured.
-                        warn!("Encountered backward conditional goto at pc={}", pc);
-                        *pc += 1;
+                            (then_branch, Vec::new(), target)
+                        };
+
+                        statements.push(decomped::Statement::If { condition, then_branch, else_branch });
+                        *pc = next_pc;
                         continue;
+                    } else {
+                        warn!(offset, "Unstructured goto encountered in decompilation");
+                        break;
                     }
                 }
 
-                // Unconditional gotos and other control flow currently left
-                // unstructured; just stop the current block.
-                if let Instr::Goto { offset, cond: None } = instr {
-                    warn!(offset, "Unstructured goto encountered in decompilation");
-                    break;
-                }
-
                 match instr {
-                    Instr::Noop => {},
+                    Instr::Noop => {}
                     Instr::Dup { .. } => unimplemented!(),
                     Instr::Pop { count } => {
                         for _ in 0..*count {
                             statements.push(decomped::Statement::Expression { expr: pop!() });
                         }
-                    },
+                    }
                     Instr::Swap => unimplemented!(),
-                    Instr::Constant { value } => stack.push(decomped::Expression::Constant {
-                        value: match value {
-                            minijvm::ConstantValue::Byte(v) => decomped::Constant::Byte(*v),
-                            minijvm::ConstantValue::Short(v) => decomped::Constant::Short(*v),
-                            minijvm::ConstantValue::Int(v) => decomped::Constant::Int(*v),
-                            minijvm::ConstantValue::Long(v) => decomped::Constant::Long(*v),
-                            minijvm::ConstantValue::Float(v) => decomped::Constant::Float(*v),
-                            minijvm::ConstantValue::Double(v) => decomped::Constant::Double(*v),
-                            minijvm::ConstantValue::String(v) => decomped::Constant::String(v.clone()),
-                            minijvm::ConstantValue::Null => decomped::Constant::Null,
-                        },
-                    }),
+                    Instr::Constant { value } => {
+                        stack.push(decomped::Expression::Constant { value: convert_constant_value(value) });
+                    }
                     Instr::Convert { from, to } => {
                         let value = Box::new(pop!());
-                        stack.push(decomped::Expression::Convert {
-                            from: from.clone(),
-                            to: to.clone(),
-                            value,
-                        });
-                    },
-                    Instr::Load { kind, index } => stack.push(decomped::Expression::Load { value_kind: kind.clone(), index: *index }),
+                        stack.push(decomped::Expression::Convert { from: from.clone(), to: to.clone(), value });
+                    }
+                    Instr::Load { kind, index } => {
+                        stack.push(decomped::Expression::Load { value_kind: kind.clone(), index: *index });
+                    }
                     Instr::Store { kind, index } => {
-                        statements.push(decomped::Statement::Store {
-                            value_kind: kind.clone(),
-                            index: *index,
-                            value: pop!(),
-                        });
-                    },
+                        statements.push(decomped::Statement::Store { value_kind: kind.clone(), index: *index, value: pop!() });
+                    }
                     Instr::IncInt { .. } => unimplemented!(),
                     Instr::LoadFromArray { .. } => unimplemented!(),
                     Instr::StoreIntoArray { .. } => unimplemented!(),
@@ -194,74 +172,34 @@ impl DecompClassExtractor {
                     Instr::Jsr { .. } => unimplemented!(),
                     Instr::Ret { .. } => unimplemented!(),
                     Instr::Ldc { constant } => {
-                        stack.push(decomped::Expression::Constant {
-                            value: match constant {
-                                minijvm::Constant::Int(v) => decomped::Constant::Int(*v),
-                                minijvm::Constant::Long(v) => decomped::Constant::Long(*v),
-                                minijvm::Constant::Float(v) => decomped::Constant::Float(*v),
-                                minijvm::Constant::Double(v) => decomped::Constant::Double(*v),
-                                minijvm::Constant::String(v) => decomped::Constant::String(v.clone()),
-                                minijvm::Constant::Class(class_ref) => decomped::Constant::Class(class_ref.clone()),
-                                minijvm::Constant::MethodHandle(method_ref) => decomped::Constant::MethodHandle(method_ref.clone()),
-                                minijvm::Constant::MethodType(method_descriptor) => decomped::Constant::MethodType(method_descriptor.clone()),
-                                minijvm::Constant::Null => decomped::Constant::Null,
-                            },
-                        });
-                    },
+                        stack.push(decomped::Expression::Constant { value: convert_constant(constant) });
+                    }
                     Instr::BinOp { op, value_kind } => {
                         let rhs = Box::new(pop!());
                         let lhs = Box::new(pop!());
-
-                        stack.push(decomped::Expression::BinOp {
-                            op: op.clone(),
-                            value_kind: value_kind.clone(),
-                            lhs,
-                            rhs,
-                        });
-                    },
+                        stack.push(decomped::Expression::BinOp { op: op.clone(), value_kind: value_kind.clone(), lhs, rhs });
+                    }
                     Instr::UnOp { op, value_kind } => {
                         let operand = Box::new(pop!());
-                        stack.push(decomped::Expression::UnOp {
-                            op: op.clone(),
-                            value_kind: value_kind.clone(),
-                            operand,
-                        });
-                    },
+                        stack.push(decomped::Expression::UnOp { op: op.clone(), value_kind: value_kind.clone(), operand });
+                    }
                     Instr::Invoke { kind, method } => {
                         let object = match kind {
                             minijvm::InvokeKind::Static => None,
-                            minijvm::InvokeKind::Virtual |
-                            minijvm::InvokeKind::Interface { .. } |
-                            minijvm::InvokeKind::Special => Some(Box::new(pop!())),
+                            _ => Some(Box::new(pop!())),
                         };
 
-                        let mut args = Vec::new();
-                        for _ in 0..method.descriptor.args.len() {
-                            args.push(pop!());
-                        }
-                        args.reverse();
-                        
-                        let expr = decomped::Expression::Invoke {
-                            kind: kind.clone(),
-                            method: method.clone(),
-                            object,
-                            args,
-                        };
+                        let args = pop_args(stack, method.descriptor.args.len())?;
+                        let expr = decomped::Expression::Invoke { kind: kind.clone(), method: method.clone(), object, args };
 
                         if method.descriptor.return_type.ty.is_void() {
                             statements.push(decomped::Statement::Expression { expr });
-                        }
-                        else {
+                        } else {
                             stack.push(expr);
                         }
-                    },
+                    }
                     Instr::InvokeDynamic { call_site, name, descriptor } => {
-                        let mut args = Vec::new();
-                        for _ in 0..descriptor.args.len() {
-                            args.push(pop!());
-                        }
-                        args.reverse();
-                        
+                        let args = pop_args(stack, descriptor.args.len())?;
                         let expr = decomped::Expression::InvokeDynamic {
                             call_site: call_site.clone(),
                             name: name.clone(),
@@ -271,54 +209,37 @@ impl DecompClassExtractor {
 
                         if descriptor.return_type.ty.is_void() {
                             statements.push(decomped::Statement::Expression { expr });
-                        }
-                        else {
+                        } else {
                             stack.push(expr);
                         }
-                    },
+                    }
                     Instr::GetField { is_static, field } => {
-                        stack.push(decomped::Expression::GetField {
-                            is_static: is_static.clone(),
-                            field: field.clone(),
-                        });
-                    },
+                        stack.push(decomped::Expression::GetField { is_static: *is_static, field: field.clone() });
+                    }
                     Instr::PutField { is_static, field } => {
                         let object = if *is_static { None } else { Some(Box::new(pop!())) };
-                        statements.push(decomped::Statement::PutField {
-                            is_static: is_static.clone(),
-                            field: field.clone(),
-                            object,
-                            value: pop!(),
-                        });
-                    },
+                        statements.push(decomped::Statement::PutField { is_static: *is_static, field: field.clone(), object, value: pop!() });
+                    }
                     Instr::Return { kind } => {
-                        statements.push(decomped::Statement::Return {
-                            value: if let Some(kind) = kind {
-                                Some((kind.clone(), pop!()))
-                            } else {
-                                None
-                            },
-                        });
-                    },
+                        let value = if let Some(kind) = kind {
+                            Some((kind.clone(), pop!()))
+                        } else {
+                            None
+                        };
+                        statements.push(decomped::Statement::Return { value });
+                    }
                     Instr::Throw => {
-                        statements.push(decomped::Statement::Throw {
-                            value: pop!(),
-                        });
-                    },
+                        statements.push(decomped::Statement::Throw { value: pop!() });
+                    }
                     Instr::New { class } => {
-                        stack.push(decomped::Expression::New {
-                            class: class.clone(),
-                        });
-                    },
+                        stack.push(decomped::Expression::New { class: class.clone() });
+                    }
                     Instr::NewArray { kind } => {
                         let count = Box::new(pop!());
-                        stack.push(decomped::Expression::NewArray {
-                            kind: kind.clone(),
-                            count,
-                        });
-                    },
-                    Instr::Unknown(instruction) => warn!(%instruction, "Cannot decompile unnkown instruction"),
-                    Instr::Goto { .. } => unreachable!("Goto should have been handled above"),
+                        stack.push(decomped::Expression::NewArray { kind: kind.clone(), count });
+                    }
+                    Instr::Unknown(instruction) => warn!(%instruction, "Cannot decompile unknown instruction"),
+                    Instr::Goto { .. } => unreachable!(),
                 }
 
                 *pc += 1;
@@ -327,12 +248,12 @@ impl DecompClassExtractor {
             Ok(statements)
         }
 
-        let mut stack = Vec::<decomped::Expression>::new();
-        let mut pc = 0usize;
+        let mut stack = Vec::new();
+        let mut pc = 0;
         let statements = decomp_block(code, &mut pc, code.instructions.len(), &mut stack)?;
 
         if !stack.is_empty() {
-            warn!("Stack insn't empty at the end of decompilation, it this a bug?");
+            warn!("Stack isn't empty at the end of decompilation, is this a bug?");
         }
 
         Ok(statements)
@@ -350,15 +271,12 @@ impl DecompClassExtractor {
                     code: Self::decomp_code(&method.code)?,
                 })
             }).try_collect()?,
-            fields: class.fields.iter().map(|field| -> anyhow::Result<decomped::Field> {
-                Ok(decomped::Field {
-                    name: field.name.clone(),
-                    descriptor: field.descriptor.clone(),
-                    access_flags: field.access_flags.clone(),
-                    // TODO
-                    init_value: None,
-                })
-            }).try_collect()?,
+            fields: class.fields.iter().map(|field| decomped::Field {
+                name: field.name.clone(),
+                descriptor: field.descriptor.clone(),
+                access_flags: field.access_flags.clone(),
+                init_value: None,
+            }).collect(),
         })
     }
 }
@@ -371,11 +289,11 @@ impl super::ExtractorKind for DecompClassExtractor {
     }
 
     async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<decomped::Class> {
-        let mapped_class = manager.extract(super::mapped_class::MappedClassExtractor{
+        let mapped_class = manager.extract(super::mapped_class::MappedClassExtractor {
             class: self.class,
             mappings_brand: self.mappings_brand,
         }).await?;
-        
+
         crate::spawn_cpu_bound(move || Self::decomp(&mapped_class)).await?
     }
 }
