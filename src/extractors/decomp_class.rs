@@ -343,8 +343,131 @@ impl DecompClassExtractor {
             }).collect(),
         };
 
+        Self::extract_lambdas(&mut result);
         Self::extract_field_initializers(&mut result);
         Ok(result)
+    }
+
+    fn extract_lambdas(class: &mut decomped::Class) {
+        for method in &mut class.methods {
+            for stmt in &mut method.code {
+                Self::extract_lambdas_in_statement(stmt);
+            }
+        }
+    }
+
+    fn extract_lambdas_in_statement(stmt: &mut decomped::Statement) {
+        match stmt {
+            decomped::Statement::Expression { expr } => Self::extract_lambdas_in_expression(expr),
+            decomped::Statement::Store { value, .. } => Self::extract_lambdas_in_expression(value),
+            decomped::Statement::PutField { object, value, .. } => {
+                if let Some(obj) = object {
+                    Self::extract_lambdas_in_expression(obj);
+                }
+                Self::extract_lambdas_in_expression(value);
+            }
+            decomped::Statement::Return { value: Some((_, expr)) } => Self::extract_lambdas_in_expression(expr),
+            decomped::Statement::Return { value: None } => {}
+            decomped::Statement::Throw { value } => Self::extract_lambdas_in_expression(value),
+            decomped::Statement::StoreIntoArray { array, index, value, .. } => {
+                Self::extract_lambdas_in_expression(array);
+                Self::extract_lambdas_in_expression(index);
+                Self::extract_lambdas_in_expression(value);
+            }
+            decomped::Statement::If { condition, then_branch, else_branch } => {
+                Self::extract_lambdas_in_expression(condition);
+                for s in then_branch {
+                    Self::extract_lambdas_in_statement(s);
+                }
+                for s in else_branch {
+                    Self::extract_lambdas_in_statement(s);
+                }
+            }
+            decomped::Statement::While { condition, body } => {
+                Self::extract_lambdas_in_expression(condition);
+                for s in body {
+                    Self::extract_lambdas_in_statement(s);
+                }
+            }
+        }
+    }
+
+    fn extract_lambdas_in_expression(expr: &mut decomped::Expression) {
+        if let decomped::Expression::InvokeDynamic { call_site, name, args, .. } = expr {
+            if call_site.bootstrap.class.name.0 == "java/lang/invoke/LambdaMetafactory"
+                || call_site.bootstrap.class.name.0 == "java.lang.invoke.LambdaMetafactory"
+            {
+                if let Some(minijvm::Constant::MethodHandle(target)) = call_site.static_args.get(1) {
+                    let mut captures = std::mem::take(args);
+                    for capture in &mut captures {
+                        Self::extract_lambdas_in_expression(capture);
+                    }
+                    *expr = decomped::Expression::Lambda {
+                        target: target.clone(),
+                        interface_method: name.clone(),
+                        captures,
+                    };
+                    return;
+                }
+            }
+        }
+
+        match expr {
+            decomped::Expression::Constant { .. }
+            | decomped::Expression::Load { .. }
+            | decomped::Expression::New { .. }
+            | decomped::Expression::Lambda { .. } => {}
+            decomped::Expression::BinOp { lhs, rhs, .. } => {
+                Self::extract_lambdas_in_expression(lhs);
+                Self::extract_lambdas_in_expression(rhs);
+            }
+            decomped::Expression::UnOp { operand, .. } => {
+                Self::extract_lambdas_in_expression(operand);
+            }
+            decomped::Expression::Invoke { object, args, .. } => {
+                if let Some(obj) = object {
+                    Self::extract_lambdas_in_expression(obj);
+                }
+                for arg in args {
+                    Self::extract_lambdas_in_expression(arg);
+                }
+            }
+            decomped::Expression::InvokeDynamic { args, .. } => {
+                for arg in args {
+                    Self::extract_lambdas_in_expression(arg);
+                }
+            }
+            decomped::Expression::NewArray { count, .. } => {
+                Self::extract_lambdas_in_expression(count);
+            }
+            decomped::Expression::Convert { value, .. } => {
+                Self::extract_lambdas_in_expression(value);
+            }
+            decomped::Expression::GetField { object, .. } => {
+                if let Some(obj) = object {
+                    Self::extract_lambdas_in_expression(obj);
+                }
+            }
+            decomped::Expression::LoadFromArray { array, index, .. } => {
+                Self::extract_lambdas_in_expression(array);
+                Self::extract_lambdas_in_expression(index);
+            }
+            decomped::Expression::ArrayLength { array } => {
+                Self::extract_lambdas_in_expression(array);
+            }
+            decomped::Expression::Cast { value, .. } => {
+                Self::extract_lambdas_in_expression(value);
+            }
+            decomped::Expression::Compare { lhs, rhs, .. } => {
+                Self::extract_lambdas_in_expression(lhs);
+                Self::extract_lambdas_in_expression(rhs);
+            }
+            decomped::Expression::Ternary { condition, then_value, else_value } => {
+                Self::extract_lambdas_in_expression(condition);
+                Self::extract_lambdas_in_expression(then_value);
+                Self::extract_lambdas_in_expression(else_value);
+            }
+        }
     }
 
     fn extract_field_initializers(class: &mut decomped::Class) {

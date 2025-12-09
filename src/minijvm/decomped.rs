@@ -149,6 +149,12 @@ pub enum Expression {
         then_value: Box<Expression>,
         else_value: Box<Expression>,
     },
+
+    Lambda {
+        target: super::MethodRef,
+        interface_method: Ident,
+        captures: Vec<Expression>,
+    },
 }
 
 impl Expression {
@@ -219,6 +225,14 @@ impl Expression {
             }
             Expression::Ternary { condition, then_value, else_value } => {
                 (10, format!("{} ? {} : {}", condition.printed_prec(ctx, 10), then_value.printed_prec(ctx, 10), else_value.printed_prec(ctx, 10)))
+            }
+            Expression::Lambda { target, interface_method: _, captures } => {
+                if captures.is_empty() {
+                    (100, format!("{}::{}", target.class.name.0, target.name.0))
+                } else {
+                    let captures_str = captures.iter().map(|c| c.printed(ctx)).collect::<Vec<_>>().join(", ");
+                    (100, format!("[{}]{}::{}", captures_str, target.class.name.0, target.name.0))
+                }
             }
         }
     }
