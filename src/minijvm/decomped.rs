@@ -92,6 +92,12 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
+
+    Ternary {
+        condition: Box<Expression>,
+        then_value: Box<Expression>,
+        else_value: Box<Expression>,
+    },
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]

@@ -106,7 +106,7 @@ fn decomp_block(
                         }
                     });
 
-                let (then_branch, else_branch, next_pc) = if let Some((then_goto_idx, end_idx)) = then_goto {
+                if let Some((then_goto_idx, end_idx)) = then_goto {
                     let mut then_pc = then_start;
                     let mut then_stack = stack.clone();
                     let then_branch = decomp_block(code, &mut then_pc, then_goto_idx, &mut then_stack)?;
@@ -115,11 +115,27 @@ fn decomp_block(
                     let mut else_stack = stack.clone();
                     let else_branch = decomp_block(code, &mut else_pc, end_idx, &mut else_stack)?;
 
-                    if then_stack.len() == stack.len() {
-                        *stack = then_stack;
+                    let is_ternary = then_stack.len() == stack.len() + 1
+                        && else_stack.len() == stack.len() + 1
+                        && then_branch.is_empty()
+                        && else_branch.is_empty();
+
+                    if is_ternary {
+                        let then_value = then_stack.pop().unwrap();
+                        let else_value = else_stack.pop().unwrap();
+                        stack.push(decomped::Expression::Ternary {
+                            condition: Box::new(condition),
+                            then_value: Box::new(then_value),
+                            else_value: Box::new(else_value),
+                        });
+                    } else {
+                        if then_stack.len() == stack.len() {
+                            *stack = then_stack;
+                        }
+                        statements.push(decomped::Statement::If { condition, then_branch, else_branch });
                     }
 
-                    (then_branch, else_branch, end_idx)
+                    *pc = end_idx;
                 } else {
                     let mut then_pc = then_start;
                     let mut then_stack = stack.clone();
@@ -129,11 +145,9 @@ fn decomp_block(
                         *stack = then_stack;
                     }
 
-                    (then_branch, Vec::new(), target)
-                };
-
-                statements.push(decomped::Statement::If { condition, then_branch, else_branch });
-                *pc = next_pc;
+                    statements.push(decomped::Statement::If { condition, then_branch, else_branch: Vec::new() });
+                    *pc = target;
+                }
                 continue;
             } else {
                 warn!(offset, "Unstructured goto encountered in decompilation");
