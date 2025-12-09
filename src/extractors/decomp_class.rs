@@ -324,7 +324,7 @@ impl DecompClassExtractor {
     }
 
     fn decomp(class: &minijvm::Class) -> anyhow::Result<decomped::Class> {
-        Ok(decomped::Class {
+        let mut result = decomped::Class {
             name: class.name.clone(),
             super_class: class.super_class.clone(),
             methods: class.methods.iter().map(|method| -> anyhow::Result<decomped::Method> {
@@ -341,7 +341,95 @@ impl DecompClassExtractor {
                 access_flags: field.access_flags.clone(),
                 init_value: None,
             }).collect(),
-        })
+        };
+
+        Self::extract_field_initializers(&mut result);
+        Ok(result)
+    }
+
+    fn extract_field_initializers(class: &mut decomped::Class) {
+        Self::extract_from_initializer(class, "<clinit>", true);
+        Self::extract_from_initializer(class, "<init>", false);
+
+        class.methods.retain(|m| {
+            if m.name.0 != "<clinit>" && m.name.0 != "<init>" {
+                return true;
+            }
+            !Self::is_empty_initializer(&m.code)
+        });
+    }
+
+    fn extract_from_initializer(class: &mut decomped::Class, method_name: &str, is_static: bool) {
+        let Some(method) = class.methods.iter_mut().find(|m| m.name.0 == method_name) else {
+            return;
+        };
+
+        let mut to_remove = Vec::new();
+
+        for (idx, stmt) in method.code.iter().enumerate() {
+            let decomped::Statement::PutField {
+                is_static: field_is_static,
+                field,
+                object,
+                value,
+            } = stmt else {
+                continue;
+            };
+
+            if *field_is_static != is_static {
+                continue;
+            }
+
+            if !is_static {
+                let Some(obj) = object else { continue };
+                let decomped::Expression::Load { index: 0, .. } = obj.as_ref() else {
+                    continue;
+                };
+            }
+
+            if field.class.name != class.name {
+                continue;
+            }
+
+            let Some(target_field) = class.fields.iter_mut().find(|f| f.name == field.name) else {
+                continue;
+            };
+
+            if target_field.init_value.is_some() {
+                continue;
+            }
+
+            target_field.init_value = Some(value.clone());
+            to_remove.push(idx);
+        }
+
+        for idx in to_remove.into_iter().rev() {
+            method.code.remove(idx);
+        }
+    }
+
+    fn is_empty_initializer(code: &[decomped::Statement]) -> bool {
+        match code {
+            [] => true,
+            [decomped::Statement::Return { value: None }] => true,
+            [decomped::Statement::Expression { expr }, decomped::Statement::Return { value: None }] => {
+                Self::is_super_init_call(expr)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_super_init_call(expr: &decomped::Expression) -> bool {
+        let decomped::Expression::Invoke { method, object: Some(obj), args, .. } = expr else {
+            return false;
+        };
+        if method.name.0 != "<init>" {
+            return false;
+        }
+        let decomped::Expression::Load { index: 0, .. } = obj.as_ref() else {
+            return false;
+        };
+        args.is_empty()
     }
 }
 
