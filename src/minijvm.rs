@@ -315,6 +315,10 @@ pub enum Instruction {
     Store { kind: ValueKind, index: u16 },
     IncInt { index: u16, value: i16 },
 
+    LoadFromArray { kind: ValueKind },
+    StoreIntoArray { kind: ValueKind },
+    ArrayLength,
+
     Goto {
         offset: i32,
         cond: Option<GotoCondition>,
@@ -365,9 +369,8 @@ pub enum Instruction {
 
     Throw,
 
-    New {
-        class: ClassRef,
-    },
+    New { class: ClassRef },
+    NewArray { kind: ValueKind },
 
     /// Contains the debug format of the instruction
     Unknown(String),

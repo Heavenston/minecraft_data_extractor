@@ -52,6 +52,10 @@ pub enum Expression {
     New {
         class: super::ClassRef,
     },
+    NewArray {
+        kind: super::ValueKind,
+        count: Box<Expression>,
+    },
 
     Convert {
         from: super::ValueKind,

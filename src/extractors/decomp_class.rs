@@ -188,6 +188,9 @@ impl DecompClassExtractor {
                         });
                     },
                     Instr::IncInt { .. } => unimplemented!(),
+                    Instr::LoadFromArray { .. } => unimplemented!(),
+                    Instr::StoreIntoArray { .. } => unimplemented!(),
+                    Instr::ArrayLength => unimplemented!(),
                     Instr::Jsr { .. } => unimplemented!(),
                     Instr::Ret { .. } => unimplemented!(),
                     Instr::Ldc { constant } => {
@@ -305,6 +308,13 @@ impl DecompClassExtractor {
                     Instr::New { class } => {
                         stack.push(decomped::Expression::New {
                             class: class.clone(),
+                        });
+                    },
+                    Instr::NewArray { kind } => {
+                        let count = Box::new(pop!());
+                        stack.push(decomped::Expression::NewArray {
+                            kind: kind.clone(),
+                            count,
                         });
                     },
                     Instr::Unknown(instruction) => warn!(%instruction, "Cannot decompile unnkown instruction"),
