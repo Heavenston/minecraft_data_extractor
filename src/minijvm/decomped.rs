@@ -1,6 +1,36 @@
 use std::fmt::Write;
 
-use super::{ Ident, IdentPath, TypeDescriptor, MethodDescriptor, AccessFlags };
+use super::{ Ident, IdentPath, TypeDescriptor, TypeDescriptorKind, MethodDescriptor, AccessFlags };
+
+pub struct PrintContext {
+    is_static: bool,
+    arg_slots: Vec<u16>,
+}
+
+impl PrintContext {
+    pub fn new(is_static: bool, args: &[TypeDescriptor]) -> Self {
+        let mut arg_slots = Vec::new();
+        let mut slot = if is_static { 0 } else { 1 };
+        for arg in args {
+            arg_slots.push(slot);
+            slot += match arg.ty {
+                TypeDescriptorKind::Long | TypeDescriptorKind::Double => 2,
+                _ => 1,
+            };
+        }
+        Self { is_static, arg_slots }
+    }
+
+    pub fn local_name(&self, index: u16) -> String {
+        if !self.is_static && index == 0 {
+            return "this".to_string();
+        }
+        if let Some(arg_idx) = self.arg_slots.iter().position(|&s| s == index) {
+            return format!("arg{arg_idx}");
+        }
+        format!("local_{index}")
+    }
+}
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum Constant {
@@ -122,12 +152,12 @@ pub enum Expression {
 }
 
 impl Expression {
-    pub fn printed(&self) -> String {
-        self.printed_prec(0)
+    pub fn printed(&self, ctx: &PrintContext) -> String {
+        self.printed_prec(ctx, 0)
     }
 
-    fn printed_prec(&self, parent_prec: u8) -> String {
-        let (prec, s) = self.printed_inner();
+    fn printed_prec(&self, ctx: &PrintContext, parent_prec: u8) -> String {
+        let (prec, s) = self.printed_inner(ctx);
         if prec < parent_prec {
             format!("({s})")
         } else {
@@ -135,60 +165,60 @@ impl Expression {
         }
     }
 
-    fn printed_inner(&self) -> (u8, String) {
+    fn printed_inner(&self, ctx: &PrintContext) -> (u8, String) {
         match self {
             Expression::Constant { value } => (100, value.printed()),
-            Expression::Load { index, .. } => (100, format!("local_{index}")),
+            Expression::Load { index, .. } => (100, ctx.local_name(*index)),
             Expression::BinOp { op, lhs, rhs, .. } => {
                 let (prec, op_str) = op.printed_with_prec();
-                (prec, format!("{} {op_str} {}", lhs.printed_prec(prec), rhs.printed_prec(prec + 1)))
+                (prec, format!("{} {op_str} {}", lhs.printed_prec(ctx, prec), rhs.printed_prec(ctx, prec + 1)))
             }
             Expression::UnOp { op, operand, .. } => {
                 let op_str = op.printed();
-                (90, format!("{op_str}{}", operand.printed_prec(90)))
+                (90, format!("{op_str}{}", operand.printed_prec(ctx, 90)))
             }
             Expression::Invoke { method, object, args, .. } => {
-                let args_str = args.iter().map(|a| a.printed()).collect::<Vec<_>>().join(", ");
+                let args_str = args.iter().map(|a| a.printed(ctx)).collect::<Vec<_>>().join(", ");
                 let s = match object {
-                    Some(obj) => format!("{}.{}({args_str})", obj.printed_prec(100), method.name.0),
+                    Some(obj) => format!("{}.{}({args_str})", obj.printed_prec(ctx, 100), method.name.0),
                     None => format!("{}.{}({args_str})", method.class.name.0, method.name.0),
                 };
                 (100, s)
             }
             Expression::InvokeDynamic { name, args, .. } => {
-                let args_str = args.iter().map(|a| a.printed()).collect::<Vec<_>>().join(", ");
+                let args_str = args.iter().map(|a| a.printed(ctx)).collect::<Vec<_>>().join(", ");
                 (100, format!("{name}({args_str})"))
             }
             Expression::New { class } => (100, format!("new {}", class.name.0)),
             Expression::NewArray { kind, count } => {
-                (100, format!("new {}[{}]", kind.printed(), count.printed()))
+                (100, format!("new {}[{}]", kind.printed(), count.printed(ctx)))
             }
             Expression::Convert { to, value, .. } => {
-                (90, format!("({}){}", to.printed(), value.printed_prec(90)))
+                (90, format!("({}){}", to.printed(), value.printed_prec(ctx, 90)))
             }
             Expression::GetField { is_static, field, object } => {
                 let target = if *is_static {
                     field.class.name.0.clone()
                 } else {
-                    object.as_ref().map(|o| o.printed_prec(100)).unwrap_or_else(|| "this".to_string())
+                    object.as_ref().map(|o| o.printed_prec(ctx, 100)).unwrap_or_else(|| "this".to_string())
                 };
                 (100, format!("{target}.{}", field.name.0))
             }
             Expression::LoadFromArray { array, index, .. } => {
-                (100, format!("{}[{}]", array.printed_prec(100), index.printed()))
+                (100, format!("{}[{}]", array.printed_prec(ctx, 100), index.printed(ctx)))
             }
             Expression::ArrayLength { array } => {
-                (100, format!("{}.length", array.printed_prec(100)))
+                (100, format!("{}.length", array.printed_prec(ctx, 100)))
             }
             Expression::Cast { class, value } => {
-                (90, format!("({}){}", class.name.0, value.printed_prec(90)))
+                (90, format!("({}){}", class.name.0, value.printed_prec(ctx, 90)))
             }
             Expression::Compare { cmp, lhs, rhs } => {
                 let op_str = cmp.printed();
-                (30, format!("{} {op_str} {}", lhs.printed_prec(30), rhs.printed_prec(31)))
+                (30, format!("{} {op_str} {}", lhs.printed_prec(ctx, 30), rhs.printed_prec(ctx, 31)))
             }
             Expression::Ternary { condition, then_value, else_value } => {
-                (10, format!("{} ? {} : {}", condition.printed_prec(10), then_value.printed_prec(10), else_value.printed_prec(10)))
+                (10, format!("{} ? {} : {}", condition.printed_prec(ctx, 10), then_value.printed_prec(ctx, 10), else_value.printed_prec(ctx, 10)))
             }
         }
     }
@@ -242,56 +272,56 @@ pub enum Statement {
 }
 
 impl Statement {
-    pub fn printed(&self) -> String {
-        self.printed_indent(0)
+    pub fn printed(&self, ctx: &PrintContext) -> String {
+        self.printed_indent(ctx, 0)
     }
 
-    fn printed_indent(&self, indent: usize) -> String {
+    fn printed_indent(&self, ctx: &PrintContext, indent: usize) -> String {
         let ind = "    ".repeat(indent);
         match self {
-            Statement::Expression { expr } => format!("{ind}{};", expr.printed()),
+            Statement::Expression { expr } => format!("{ind}{};", expr.printed(ctx)),
             Statement::Store { index, value, .. } => {
-                format!("{ind}local_{index} = {};", value.printed())
+                format!("{ind}{} = {};", ctx.local_name(*index), value.printed(ctx))
             }
             Statement::PutField { is_static, field, object, value } => {
                 let target = if *is_static {
                     format!("{}.{}", field.class.name.0, field.name.0)
                 } else {
                     match object {
-                        Some(obj) => format!("{}.{}", obj.printed(), field.name.0),
+                        Some(obj) => format!("{}.{}", obj.printed(ctx), field.name.0),
                         None => format!("this.{}", field.name.0),
                     }
                 };
-                format!("{ind}{target} = {};", value.printed())
+                format!("{ind}{target} = {};", value.printed(ctx))
             }
             Statement::Return { value } => match value {
-                Some((_, expr)) => format!("{ind}return {};", expr.printed()),
+                Some((_, expr)) => format!("{ind}return {};", expr.printed(ctx)),
                 None => format!("{ind}return;"),
             },
-            Statement::Throw { value } => format!("{ind}throw {};", value.printed()),
+            Statement::Throw { value } => format!("{ind}throw {};", value.printed(ctx)),
             Statement::StoreIntoArray { array, index, value, .. } => {
-                format!("{ind}{}[{}] = {};", array.printed(), index.printed(), value.printed())
+                format!("{ind}{}[{}] = {};", array.printed(ctx), index.printed(ctx), value.printed(ctx))
             }
             Statement::If { condition, then_branch, else_branch } => {
-                let mut s = format!("{ind}if ({}) {{\n", condition.printed());
+                let mut s = format!("{ind}if ({}) {{\n", condition.printed(ctx));
                 for stmt in then_branch {
-                    let _ = writeln!(s, "{}", stmt.printed_indent(indent + 1));
+                    let _ = writeln!(s, "{}", stmt.printed_indent(ctx, indent + 1));
                 }
                 if else_branch.is_empty() {
                     write!(s, "{ind}}}").unwrap();
                 } else {
                     writeln!(s, "{ind}}} else {{").unwrap();
                     for stmt in else_branch {
-                        let _ = writeln!(s, "{}", stmt.printed_indent(indent + 1));
+                        let _ = writeln!(s, "{}", stmt.printed_indent(ctx, indent + 1));
                     }
                     write!(s, "{ind}}}").unwrap();
                 }
                 s
             }
             Statement::While { condition, body } => {
-                let mut s = format!("{ind}while ({}) {{\n", condition.printed());
+                let mut s = format!("{ind}while ({}) {{\n", condition.printed(ctx));
                 for stmt in body {
-                    let _ = writeln!(s, "{}", stmt.printed_indent(indent + 1));
+                    let _ = writeln!(s, "{}", stmt.printed_indent(ctx, indent + 1));
                 }
                 write!(s, "{ind}}}").unwrap();
                 s
@@ -312,8 +342,9 @@ pub struct Field {
 impl Field {
     pub fn printed(&self) -> String {
         let modifiers = self.access_flags.printed();
+        let ctx = PrintContext::new(true, &[]);
         let init = self.init_value.as_ref()
-            .map(|v| format!(" = {}", v.printed()))
+            .map(|v| format!(" = {}", v.printed(&ctx)))
             .unwrap_or_default();
         format!("{modifiers}{} {}{init};", self.descriptor, self.name.0)
     }
@@ -329,6 +360,7 @@ pub struct Method {
 
 impl Method {
     pub fn printed(&self) -> String {
+        let ctx = PrintContext::new(self.access_flags.static_, &self.descriptor.args);
         let modifiers = self.access_flags.printed();
         let args = self.descriptor.args.iter()
             .enumerate()
@@ -337,7 +369,7 @@ impl Method {
             .join(", ");
         let mut s = format!("{modifiers}{} {}({args}) {{\n", self.descriptor.return_type, self.name.0);
         for stmt in &self.code {
-            let _ = writeln!(s, "{}", stmt.printed_indent(1));
+            let _ = writeln!(s, "{}", stmt.printed_indent(&ctx, 1));
         }
         s.push('}');
         s
