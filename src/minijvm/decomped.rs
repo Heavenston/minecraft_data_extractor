@@ -57,8 +57,8 @@ impl Constant {
             Constant::Float(v) => format!("{v}f"),
             Constant::Double(v) => v.to_string(),
             Constant::String(s) => format!("{s:?}"),
-            Constant::Class(c) => format!("{}.class", c.name.0),
-            Constant::MethodHandle(m) => format!("{}::{}", m.class.name.0, m.name.0),
+            Constant::Class(c) => format!("{}.class", c.descriptor),
+            Constant::MethodHandle(m) => format!("{}::{}", m.class.descriptor, m.name.0),
             Constant::MethodType(d) => format!("{d}"),
             Constant::Null => "null".to_string(),
         }
@@ -187,7 +187,7 @@ impl Expression {
                 let args_str = args.iter().map(|a| a.printed(ctx)).collect::<Vec<_>>().join(", ");
                 let s = match object {
                     Some(obj) => format!("{}.{}({args_str})", obj.printed_prec(ctx, 100), method.name.0),
-                    None => format!("{}.{}({args_str})", method.class.name.0, method.name.0),
+                    None => format!("{}.{}({args_str})", method.class.descriptor, method.name.0),
                 };
                 (100, s)
             }
@@ -195,7 +195,7 @@ impl Expression {
                 let args_str = args.iter().map(|a| a.printed(ctx)).collect::<Vec<_>>().join(", ");
                 (100, format!("{name}({args_str})"))
             }
-            Expression::New { class } => (100, format!("new {}", class.name.0)),
+            Expression::New { class } => (100, format!("new {}", class.descriptor)),
             Expression::NewArray { kind, count } => {
                 (100, format!("new {}[{}]", kind.printed(), count.printed(ctx)))
             }
@@ -204,7 +204,7 @@ impl Expression {
             }
             Expression::GetField { is_static, field, object } => {
                 let target = if *is_static {
-                    field.class.name.0.clone()
+                    field.class.descriptor.to_string()
                 } else {
                     object.as_ref().map(|o| o.printed_prec(ctx, 100)).unwrap_or_else(|| "this".to_string())
                 };
@@ -217,7 +217,7 @@ impl Expression {
                 (100, format!("{}.length", array.printed_prec(ctx, 100)))
             }
             Expression::Cast { class, value } => {
-                (90, format!("({}){}", class.name.0, value.printed_prec(ctx, 90)))
+                (90, format!("({}){}", class.descriptor, value.printed_prec(ctx, 90)))
             }
             Expression::Compare { cmp, lhs, rhs } => {
                 let op_str = cmp.printed();
@@ -228,10 +228,10 @@ impl Expression {
             }
             Expression::Lambda { target, interface_method: _, captures } => {
                 if captures.is_empty() {
-                    (100, format!("{}::{}", target.class.name.0, target.name.0))
+                    (100, format!("{}::{}", target.class.descriptor, target.name.0))
                 } else {
                     let captures_str = captures.iter().map(|c| c.printed(ctx)).collect::<Vec<_>>().join(", ");
-                    (100, format!("[{}]{}::{}", captures_str, target.class.name.0, target.name.0))
+                    (100, format!("[{}]{}::{}", captures_str, target.class.descriptor, target.name.0))
                 }
             }
         }
@@ -299,7 +299,7 @@ impl Statement {
             }
             Statement::PutField { is_static, field, object, value } => {
                 let target = if *is_static {
-                    format!("{}.{}", field.class.name.0, field.name.0)
+                    format!("{}.{}", field.class.descriptor, field.name.0)
                 } else {
                     match object {
                         Some(obj) => format!("{}.{}", obj.printed(ctx), field.name.0),

@@ -48,7 +48,13 @@ impl ReadClassExtractor {
         }
 
         let make_class_ref = |class: &cpool::Class<'_>| -> anyhow::Result<minijvm::ClassRef> {
-            Ok(minijvm::ClassRef { name: minijvm::IdentPath::new(pool_str!(class.name)?.replace('/', ".")) })
+            let name = pool_str!(class.name)?;
+            let descriptor = if name.starts_with('[') {
+                minijvm::TypeDescriptor::parse_complete(name)?
+            } else {
+                minijvm::TypeDescriptor { ty: minijvm::TypeDescriptorKind::Object(minijvm::IdentPath::new(name.replace('/', "."))), array_depth: 0 }
+            };
+            Ok(minijvm::ClassRef { descriptor })
         };
 
         let make_method_ref = |method_ref: &cpool::MethodRef<'_>| -> anyhow::Result<minijvm::MethodRef> {

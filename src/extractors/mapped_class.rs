@@ -16,39 +16,54 @@ impl MappedClassExtractor {
 
         let map_class_ref = |class_ref: &minijvm::ClassRef| -> minijvm::ClassRef {
             minijvm::ClassRef {
-                name: mappings.map_class(&class_ref.name)
-                    .map(|class| class.name.clone())
-                    .unwrap_or_else(|| class_ref.name.clone()),
+                descriptor: class_ref.descriptor.to_mapped(mappings),
+            }
+        };
+        let class_name_from_type = |ty: &minijvm::TypeDescriptor| -> Option<minijvm::IdentPath> {
+            match ty {
+                minijvm::TypeDescriptor {
+                    ty: minijvm::TypeDescriptorKind::Object(name),
+                    array_depth: 0,
+                } => Some(name.clone()),
+                _ => None,
+            }
+        };
+        let type_from_class_name = |name: minijvm::IdentPath| -> minijvm::TypeDescriptor {
+            minijvm::TypeDescriptor {
+                ty: minijvm::TypeDescriptorKind::Object(name),
+                array_depth: 0,
             }
         };
         let map_method_ref = |method_ref: &minijvm::MethodRef| -> minijvm::MethodRef {
-            let Some(mapped_class) = mappings.map_class(&method_ref.class.name)
+            let Some(class_name) = class_name_from_type(&method_ref.class.descriptor) else { return method_ref.clone() };
+            let Some(mapped_class) = mappings.map_class(&*class_name)
             else { return method_ref.clone() };
             let descriptor = method_ref.descriptor.to_mapped(mappings);
             let name = mapped_class.map_method(&method_ref.name.0, &descriptor)
                 .map(|method| method.name.clone())
                 .unwrap_or_else(|| {
-                    warn!(obfuscated_method_name = %method_ref.name, class_name = %mapped_class.name, obfuscated_class_name = %method_ref.class.name, "Did not find method in mappings");
+                    warn!(obfuscated_method_name = %method_ref.name, class_name = %mapped_class.name, obfuscated_class_name = %class_name, "Did not find method in mappings");
                     method_ref.name.clone()
                 });
             minijvm::MethodRef {
-                class: minijvm::ClassRef { name: mapped_class.name.clone() },
+                class: minijvm::ClassRef { descriptor: type_from_class_name(mapped_class.name.clone()) },
                 name,
                 descriptor,
             }
         };
         let map_field_ref = |field_ref: &minijvm::FieldRef| -> minijvm::FieldRef {
-            let Some(mapped_class) = mappings.map_class(&field_ref.class.name)
+            let Some(class_name) = class_name_from_type(&field_ref.class.descriptor) else { return field_ref.clone() };
+            let Some(mapped_class) = mappings.map_class(&*class_name)
             else { return field_ref.clone() };
             let descriptor = field_ref.descriptor.to_mapped(mappings);
             let name = mapped_class.map_field(&field_ref.name.0, &descriptor)
                 .map(|field| field.name.clone())
                 .unwrap_or_else(|| {
-                    warn!(obfuscated_field_name = %field_ref.name, class_name = %mapped_class.name, obfuscated_class_name = %field_ref.class.name, "Did not find field in mappings");
+                    warn!(obfuscated_field_name = %field_ref.name, class_name = %mapped_class.name, obfuscated_class_name = %class_name, "Did not find field in mappings");
                     field_ref.name.clone()
                 });
             minijvm::FieldRef {
-                class: minijvm::ClassRef { name: mapped_class.name.clone() },
+                class: minijvm::ClassRef { descriptor: type_from_class_name(mapped_class.name.clone()) },
                 name,
                 descriptor,
             }
@@ -63,6 +78,7 @@ impl MappedClassExtractor {
             }
         };
 
+        // FIXME: This can very easily be out-of-sync with the instructions
         match instruction {
             Instr::Ldc { constant } => Instr::Ldc { constant: map_constant(constant) },
             Instr::Invoke { kind, method } => Instr::Invoke { kind: kind.clone(), method: map_method_ref(method) },
@@ -85,6 +101,7 @@ impl MappedClassExtractor {
             Instr::GetField { is_static, field } => Instr::GetField { is_static: *is_static, field: map_field_ref(field) },
             Instr::PutField { is_static, field } => Instr::PutField { is_static: *is_static, field: map_field_ref(field) },
             Instr::New { class } => Instr::New { class: map_class_ref(class) },
+            Instr::CheckCast { class } => Instr::CheckCast { class: map_class_ref(class) },
 
             _ => instruction.clone(),
         }

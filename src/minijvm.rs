@@ -273,7 +273,7 @@ pub struct Field {
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct ClassRef {
-    pub name: IdentPath,
+    pub descriptor: TypeDescriptor,
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
