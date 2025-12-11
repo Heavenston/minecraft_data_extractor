@@ -104,6 +104,13 @@ pub(crate) struct Args {
     /// If specified, do not print the unsupported version warnings
     #[arg(short = 'u', long)]
     ignore_unsupported: bool,
+
+    /// If specified, will read and map the given class and print the result
+    #[arg(long)]
+    read_class: Option<String>,
+    /// If specified, will decompile the given class and print the result
+    #[arg(long)]
+    decomp_class: Option<String>,
 }
 
 pub(crate) struct AppState {
@@ -211,21 +218,20 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
 
     let mut manager = extractors::ExtractionManager::new(state, &client_json).await?;
 
-    let _ = manager.extract(extractors::version_json::VersionJsonExtractor).await?;
-
-    // let c = manager.extract(extractors::mapped_class::MappedClassExtractor {
-    //     // class: format!("net.minecraft.network.protocol.configuration.ConfigurationProtocols"),
-    //     class: format!("net.minecraft.network.protocol.PacketFlow"),
-    //     mappings_brand: mappings::Brand::Mojmaps,
-    // }).await?;
-    // println!("{c:#?}");
-
-    let c = manager.extract(extractors::decomp_class::DecompClassExtractor {
-        // class: format!("net.minecraft.network.protocol.configuration.ConfigurationProtocols"),
-        class: format!("net.minecraft.network.protocol.PacketFlow"),
-        mappings_brand: mappings::Brand::Mojmaps,
-    }).await?;
-    println!("{}", c.printed());
+    if let Some(class_name) = &state.args.read_class {
+        let c = manager.extract(extractors::mapped_class::MappedClassExtractor {
+            class: class_name.clone(),
+            mappings_brand: mappings::Brand::Mojmaps,
+        }).await?;
+        println!("{c:#?}");
+    }
+    if let Some(class_name) = &state.args.decomp_class {
+        let c = manager.extract(extractors::decomp_class::DecompClassExtractor {
+            class: class_name.clone(),
+            mappings_brand: mappings::Brand::Mojmaps,
+        }).await?;
+        println!("{}", c.printed());
+    }
 
     manager.finish().await?;
     
@@ -234,7 +240,13 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .event_format(
+            tracing_subscriber::fmt::format()
+                .with_file(true)
+                .with_line_number(true)
+        )
+        .init();
     let args = Args::parse();
     let state = AppState {
         args,
@@ -303,6 +315,9 @@ async fn main() -> anyhow::Result<()> {
     
     if errors.is_empty() {
         Ok(())
+    }
+    else if errors.len() == 1 && let Some(error) = errors.pop() {
+        Err(error)
     }
     else {
         Err(anyhow::anyhow!("{}", errors.into_iter().map(|e| format!("{e}")).reduce(|a, b| a + ", " + &b).unwrap()))
