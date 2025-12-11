@@ -298,6 +298,18 @@ pub enum InvokeKind {
     Special,
 }
 
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub enum MethodHandleRef {
+    Field(FieldRef),
+    Method(MethodRef),
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub struct MethodHandle {
+    pub kind: MethodKind,
+    pub reference: MethodHandleRef,
+}
+
 // TODO: Vs ConstantValue?
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum Constant {
@@ -307,7 +319,7 @@ pub enum Constant {
     Double(f64),
     String(String),
     Class(ClassRef),
-    MethodHandle(MethodRef),
+    MethodHandle(MethodHandle),
     MethodType(MethodDescriptor),
     Null,
 }

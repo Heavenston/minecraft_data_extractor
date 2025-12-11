@@ -69,10 +69,20 @@ impl MappedClassExtractor {
             }
         };
 
+        let map_method_handle_ref = |handle_ref: &minijvm::MethodHandleRef| -> minijvm::MethodHandleRef {
+            match handle_ref {
+                minijvm::MethodHandleRef::Method(m) => minijvm::MethodHandleRef::Method(map_method_ref(m)),
+                minijvm::MethodHandleRef::Field(f) => minijvm::MethodHandleRef::Field(map_field_ref(f)),
+            }
+        };
+
         let map_constant = |constant: &minijvm::Constant| -> minijvm::Constant {
             match constant {
                 Const::Class(class_ref) => Const::Class(map_class_ref(class_ref)),
-                Const::MethodHandle(method_ref) => Const::MethodHandle(map_method_ref(method_ref)),
+                Const::MethodHandle(handle) => Const::MethodHandle(minijvm::MethodHandle {
+                    kind: handle.kind.clone(),
+                    reference: map_method_handle_ref(&handle.reference),
+                }),
                 Const::MethodType(method_descriptor) => Const::MethodType(method_descriptor.to_mapped(mappings)),
                 _ => constant.clone(),
             }

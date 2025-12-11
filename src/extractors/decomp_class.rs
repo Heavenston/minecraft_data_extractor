@@ -11,17 +11,19 @@ impl Visitor for LambdaExtractor {
     fn visit_expression(&mut self, expr: &mut decomped::Expression) {
         if let decomped::Expression::InvokeDynamic { call_site, name, args, .. } = expr {
             if call_site.bootstrap.class.descriptor.to_string() == "java.lang.invoke.LambdaMetafactory" {
-                if let Some(minijvm::Constant::MethodHandle(target)) = call_site.static_args.get(1) {
-                    let mut captures = std::mem::take(args);
-                    for capture in &mut captures {
-                        self.visit_expression(capture);
+                if let Some(minijvm::Constant::MethodHandle(handle)) = call_site.static_args.get(1) {
+                    if let minijvm::MethodHandleRef::Method(target) = &handle.reference {
+                        let mut captures = std::mem::take(args);
+                        for capture in &mut captures {
+                            self.visit_expression(capture);
+                        }
+                        *expr = decomped::Expression::Lambda {
+                            target: target.clone(),
+                            interface_method: name.clone(),
+                            captures,
+                        };
+                        return;
                     }
-                    *expr = decomped::Expression::Lambda {
-                        target: target.clone(),
-                        interface_method: name.clone(),
-                        captures,
-                    };
-                    return;
                 }
             }
         }

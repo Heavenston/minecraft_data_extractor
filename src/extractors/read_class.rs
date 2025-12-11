@@ -95,6 +95,18 @@ impl ReadClassExtractor {
             })
         };
 
+        let make_method_handle_ref = |item: &cpool::Item<'_>| -> anyhow::Result<minijvm::MethodHandleRef> {
+            Ok(match item {
+                cpool::Item::MethodRef(mr) => minijvm::MethodHandleRef::Method(make_method_ref(mr)?),
+                cpool::Item::InterfaceMethodRef(imr) => minijvm::MethodHandleRef::Method(make_interface_method_ref(imr)?),
+                cpool::Item::FieldRef(fr) => minijvm::MethodHandleRef::Field(make_field_ref(fr)?),
+                _ => {
+                    warn!(?item, "Invalid item for method handle ref");
+                    bail!("Invalid item for method handle ref: {item:?}");
+                },
+            })
+        };
+
         let constant_from_item = |item: &cpool::Item<'_>| -> anyhow::Result<minijvm::Constant> {
             Ok(match item {
                 cpool::Item::Integer(i) => minijvm::Constant::Int(i.value),
@@ -104,7 +116,10 @@ impl ReadClassExtractor {
                 cpool::Item::String(s) => minijvm::Constant::String(pool_str!(s.string)?.into()),
                 cpool::Item::Class(c) => minijvm::Constant::Class(make_class_ref(c)?),
                 cpool::Item::MethodType(t) => minijvm::Constant::MethodType(minijvm::MethodDescriptor::parse_complete(&pool_str!(t.descriptor)?)?),
-                cpool::Item::MethodHandle(h) => minijvm::Constant::MethodHandle(make_method_ref_from_item(pool!(h.reference)?)?),
+                cpool::Item::MethodHandle(h) => minijvm::Constant::MethodHandle(minijvm::MethodHandle {
+                    kind: h.kind.into(),
+                    reference: make_method_handle_ref(pool!(h.reference)?)?,
+                }),
                 item => {
                     warn!(?item, "Invalid item for constant");
                     bail!("Invalid item for constant: {item:?}");

@@ -43,7 +43,7 @@ pub enum Constant {
     Double(f64),
     String(String),
     Class(super::ClassRef),
-    MethodHandle(super::MethodRef),
+    MethodHandle(super::MethodHandle),
     MethodType(MethodDescriptor),
     Null,
 }
@@ -59,7 +59,10 @@ impl Constant {
             Constant::Double(v) => v.to_string(),
             Constant::String(s) => format!("{s:?}"),
             Constant::Class(c) => format!("{}.class", c.descriptor),
-            Constant::MethodHandle(m) => format!("{}::{}", m.class.descriptor, m.name.0),
+            Constant::MethodHandle(h) => match &h.reference {
+                super::MethodHandleRef::Method(m) => format!("{}::{}", m.class.descriptor, m.name.0),
+                super::MethodHandleRef::Field(f) => format!("{}::{}", f.class.descriptor, f.name.0),
+            },
             Constant::MethodType(d) => format!("{d}"),
             Constant::Null => "null".to_string(),
         }
