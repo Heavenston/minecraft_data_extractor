@@ -379,13 +379,9 @@ impl DecompClassExtractor {
             }).collect(),
         };
 
-        Self::extract_lambdas(&mut result);
+        LambdaExtractor.visit_class(&mut result);
         Self::extract_field_initializers(&mut result);
         Ok(result)
-    }
-
-    fn extract_lambdas(class: &mut decomped::Class) {
-        LambdaExtractor.visit_class(class);
     }
 
     /// Finds and remove `PutField` expressions from `<clinit>` and `<init>`
