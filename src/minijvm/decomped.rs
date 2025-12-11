@@ -1,6 +1,7 @@
-use std::fmt::Write;
-
+pub mod visitor;
 use super::{ Ident, IdentPath, TypeDescriptor, TypeDescriptorKind, MethodDescriptor, AccessFlags };
+
+use std::fmt::Write;
 
 pub struct PrintContext {
     is_static: bool,
