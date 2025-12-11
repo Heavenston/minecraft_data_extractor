@@ -117,6 +117,7 @@ impl ReadClassExtractor {
         let noak_super_class = noak_class.super_class().map(|e| pool!(e)).transpose()?;
 
         let mut out_class = minijvm::Class {
+            access_flags: minijvm::AccessFlags::from(noak_class.access_flags()),
             name: minijvm::IdentPath::new(pool_str!(noak_this_class.name)?.replace('/', ".")),
             super_class: noak_super_class.map(|c| pool_str!(c.name)).transpose()?.map(|s: &str| s.replace('/', ".")).map(minijvm::IdentPath::new),
             fields: Vec::new(),

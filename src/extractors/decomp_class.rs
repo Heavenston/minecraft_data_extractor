@@ -476,6 +476,7 @@ impl DecompClassExtractor {
         let mut result = decomped::Class {
             name: class.name.clone(),
             super_class: class.super_class.clone(),
+            enum_variants: Vec::new(),
             methods: class.methods.iter().map(|method| -> anyhow::Result<decomped::Method> {
                 Ok(decomped::Method {
                     name: method.name.clone(),
@@ -495,7 +496,37 @@ impl DecompClassExtractor {
         LambdaExtractor.visit_class(&mut result);
         TempSimplifier.visit_class(&mut result);
         Self::extract_field_initializers(&mut result);
+
+        if class.access_flags.enum_ {
+            Self::extract_enum_variants(&mut result);
+        }
+
         Ok(result)
+    }
+
+    fn extract_enum_variants(class: &mut decomped::Class) {
+        for field in &class.fields {
+            if !field.access_flags.enum_ {
+                continue;
+            }
+
+            let Some(init) = &field.init_value else { continue };
+            let decomped::Expression::New { args, .. } = init else { continue };
+
+            let custom_args = if args.len() >= 2 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+
+            class.enum_variants.push(decomped::EnumVariant {
+                name: field.name.clone(),
+                args: custom_args,
+            });
+        }
+
+        class.fields.retain(|f| !f.access_flags.enum_ && f.name.0 != "$VALUES");
+        class.methods.retain(|m| m.name.0 != "values" && m.name.0 != "valueOf" && m.name.0 != "$values");
     }
 
     /// Finds and remove `PutField` expressions from `<clinit>` and `<init>`

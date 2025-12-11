@@ -413,34 +413,82 @@ impl Method {
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub struct EnumVariant {
+    pub name: Ident,
+    pub args: Vec<Expression>,
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Class {
     pub name: IdentPath,
     pub super_class: Option<IdentPath>,
+    pub enum_variants: Vec<EnumVariant>,
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
 }
 
 impl Class {
+    pub fn is_enum(&self) -> bool {
+        !self.enum_variants.is_empty()
+    }
+
     pub fn printed(&self) -> String {
         let simple_name = self.name.0.rsplit('.').next().unwrap_or(&self.name.0);
-        let extends = self.super_class.as_ref()
-            .filter(|s| s.0 != "java.lang.Object")
-            .map(|s| format!(" extends {}", s.0))
-            .unwrap_or_default();
-        let mut s = format!("class {simple_name}{extends} {{\n");
-        for field in &self.fields {
-            let _ = writeln!(s, "    {}", field.printed());
-        }
-        if !self.fields.is_empty() && !self.methods.is_empty() {
-            s.push('\n');
-        }
-        for method in &self.methods {
-            for line in method.printed(simple_name).lines() {
-                let _ = writeln!(s, "    {line}");
+        let ctx = PrintContext::new(true, &[]);
+
+        if self.is_enum() {
+            let mut s = format!("enum {simple_name} {{\n");
+
+            for (i, variant) in self.enum_variants.iter().enumerate() {
+                let args_str = if variant.args.is_empty() {
+                    String::new()
+                } else {
+                    let args = variant.args.iter().map(|a| a.printed(&ctx)).collect::<Vec<_>>().join(", ");
+                    format!("({args})")
+                };
+                let suffix = if i + 1 < self.enum_variants.len() { "," } else { ";" };
+                let _ = writeln!(s, "    {}{args_str}{suffix}", variant.name.0);
             }
-            s.push('\n');
+
+            if !self.fields.is_empty() {
+                s.push('\n');
+                for field in &self.fields {
+                    let _ = writeln!(s, "    {}", field.printed());
+                }
+            }
+
+            if !self.methods.is_empty() {
+                s.push('\n');
+                for method in &self.methods {
+                    for line in method.printed(simple_name).lines() {
+                        let _ = writeln!(s, "    {line}");
+                    }
+                    s.push('\n');
+                }
+            }
+
+            s.push('}');
+            s
+        } else {
+            let extends = self.super_class.as_ref()
+                .filter(|s| s.0 != "java.lang.Object")
+                .map(|s| format!(" extends {}", s.0))
+                .unwrap_or_default();
+            let mut s = format!("class {simple_name}{extends} {{\n");
+            for field in &self.fields {
+                let _ = writeln!(s, "    {}", field.printed());
+            }
+            if !self.fields.is_empty() && !self.methods.is_empty() {
+                s.push('\n');
+            }
+            for method in &self.methods {
+                for line in method.printed(simple_name).lines() {
+                    let _ = writeln!(s, "    {line}");
+                }
+                s.push('\n');
+            }
+            s.push('}');
+            s
         }
-        s.push('}');
-        s
     }
 }

@@ -554,6 +554,7 @@ pub struct Method {
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Class {
+    pub access_flags: AccessFlags,
     pub name: IdentPath,
     pub super_class: Option<IdentPath>,
     pub fields: Vec<Field>,

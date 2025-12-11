@@ -109,6 +109,7 @@ impl MappedClassExtractor {
 
     fn map_class(mappings: &mappings::Mappings, class_map: &mappings::Class, class: &minijvm::Class) -> anyhow::Result<minijvm::Class> {
         Ok(minijvm::Class {
+            access_flags: class.access_flags.clone(),
             name: class_map.name.clone(),
             super_class: class.super_class.as_ref().map(|super_class| {
                 mappings.map_class(&**super_class)
