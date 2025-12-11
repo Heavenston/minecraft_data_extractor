@@ -88,8 +88,13 @@ pub fn walk_expression<V: Visitor + ?Sized>(v: &mut V, expr: &mut Expression) {
         Expression::Constant { .. }
         | Expression::Load { .. }
         | Expression::LoadTemp { .. }
-        | Expression::New { .. }
         | Expression::Lambda { .. } => {}
+
+        Expression::New { args, .. } => {
+            for arg in args {
+                v.visit_expression(arg);
+            }
+        }
 
         Expression::BinOp { lhs, rhs, .. } => {
             v.visit_expression(lhs);

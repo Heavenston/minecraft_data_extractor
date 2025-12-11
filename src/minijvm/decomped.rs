@@ -105,6 +105,7 @@ pub enum Expression {
 
     New {
         class: super::ClassRef,
+        args: Vec<Expression>,
     },
     NewArray {
         kind: super::ValueKind,
@@ -200,7 +201,10 @@ impl Expression {
                 let args_str = args.iter().map(|a| a.printed(ctx)).collect::<Vec<_>>().join(", ");
                 (100, format!("{name}({args_str})"))
             }
-            Expression::New { class } => (100, format!("new {}", class.descriptor)),
+            Expression::New { class, args } => {
+                let args_str = args.iter().map(|a| a.printed(ctx)).collect::<Vec<_>>().join(", ");
+                (100, format!("new {}({args_str})", class.descriptor))
+            }
             Expression::NewArray { kind, count } => {
                 (100, format!("new {}[{}]", kind.printed(), count.printed(ctx)))
             }

@@ -276,12 +276,36 @@ fn decomp_block(
                 stack.push(decomped::Expression::UnOp { op: op.clone(), value_kind: value_kind.clone(), operand });
             }
             Instr::Invoke { kind, method } => {
+                let args = pop_args(stack, method.descriptor.args.len())?;
+
                 let object = match kind {
                     minijvm::InvokeKind::Static => None,
                     _ => Some(Box::new(pop_stack(stack)?)),
                 };
 
-                let args = pop_args(stack, method.descriptor.args.len())?;
+                if method.name.0 == "<init>" {
+                    if let Some(obj) = object {
+                        if let decomped::Expression::LoadTemp { index } = *obj {
+                            if let Some(stmt_idx) = statements.iter().rposition(|s| {
+                                matches!(s, decomped::Statement::StoreTemp { index: i, .. } if *i == index)
+                            }) {
+                                if let decomped::Statement::StoreTemp { value: decomped::Expression::New { ref class, args: ref new_args }, .. } = statements[stmt_idx] {
+                                    if new_args.is_empty() {
+                                        let new_expr = decomped::Expression::New { class: class.clone(), args };
+                                        statements[stmt_idx] = decomped::Statement::StoreTemp { index, value: new_expr };
+                                        *pc += 1;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        let expr = decomped::Expression::Invoke { kind: kind.clone(), method: method.clone(), object: Some(obj), args };
+                        statements.push(decomped::Statement::Expression { expr });
+                    }
+                    *pc += 1;
+                    continue;
+                }
+
                 let expr = decomped::Expression::Invoke { kind: kind.clone(), method: method.clone(), object, args };
 
                 if method.descriptor.return_type.ty.is_void() {
@@ -325,7 +349,7 @@ fn decomp_block(
                 statements.push(decomped::Statement::Throw { value: pop_stack(stack)? });
             }
             Instr::New { class } => {
-                stack.push(decomped::Expression::New { class: class.clone() });
+                stack.push(decomped::Expression::New { class: class.clone(), args: Vec::new() });
             }
             Instr::NewArray { kind } => {
                 let count = Box::new(pop_stack(stack)?);
