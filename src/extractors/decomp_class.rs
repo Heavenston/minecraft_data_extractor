@@ -1,5 +1,6 @@
 use crate::{mappings, minijvm::{self, decomped::{self, visitor::{Visitor, walk_expression}}}};
 
+use std::collections::HashMap;
 use anyhow::anyhow;
 use tracing::warn;
 use itertools::Itertools;
@@ -26,6 +27,94 @@ impl Visitor for LambdaExtractor {
         }
 
         walk_expression(self, expr);
+    }
+}
+
+fn simplify_temps(statements: &mut Vec<decomped::Statement>) {
+    struct UsageCounter(HashMap<u16, usize>);
+
+    impl Visitor for UsageCounter {
+        fn visit_expression(&mut self, expr: &mut decomped::Expression) {
+            if let decomped::Expression::LoadTemp { index } = expr {
+                *self.0.entry(*index).or_default() += 1;
+            }
+            walk_expression(self, expr);
+        }
+    }
+
+    struct TempInliner {
+        values: HashMap<u16, decomped::Expression>,
+    }
+
+    impl Visitor for TempInliner {
+        fn visit_expression(&mut self, expr: &mut decomped::Expression) {
+            if let decomped::Expression::LoadTemp { index } = expr {
+                if let Some(value) = self.values.remove(index) {
+                    *expr = value;
+                    self.visit_expression(expr);
+                    return;
+                }
+            }
+            walk_expression(self, expr);
+        }
+    }
+
+    let mut usage_counts = UsageCounter(HashMap::new());
+    for stmt in statements.iter_mut() {
+        usage_counts.visit_statement(stmt);
+    }
+
+    let mut values_to_inline = HashMap::new();
+    let mut indices_to_remove = Vec::new();
+
+    for (idx, stmt) in statements.iter().enumerate() {
+        if let decomped::Statement::StoreTemp { index, value } = stmt {
+            let usage_count = usage_counts.0.get(index).copied().unwrap_or(0);
+            let is_shadow = matches!(value, decomped::Expression::LoadTemp { .. });
+            if usage_count <= 1 || is_shadow {
+                values_to_inline.insert(*index, value.clone());
+                indices_to_remove.push(idx);
+            }
+        }
+    }
+
+    let mut inliner = TempInliner { values: values_to_inline };
+    for stmt in statements.iter_mut() {
+        inliner.visit_statement(stmt);
+    }
+
+    for idx in indices_to_remove.into_iter().rev() {
+        statements.remove(idx);
+    }
+}
+
+struct TempSimplifier;
+
+impl TempSimplifier {
+    fn simplify_block(&mut self, statements: &mut Vec<decomped::Statement>) {
+        simplify_temps(statements);
+        for stmt in statements {
+            self.visit_statement(stmt);
+        }
+    }
+}
+
+impl Visitor for TempSimplifier {
+    fn visit_method(&mut self, method: &mut decomped::Method) {
+        self.simplify_block(&mut method.code);
+    }
+
+    fn visit_statement(&mut self, stmt: &mut decomped::Statement) {
+        match stmt {
+            decomped::Statement::If { then_branch, else_branch, .. } => {
+                self.simplify_block(then_branch);
+                self.simplify_block(else_branch);
+            }
+            decomped::Statement::While { body, .. } => {
+                self.simplify_block(body);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -404,6 +493,7 @@ impl DecompClassExtractor {
         };
 
         LambdaExtractor.visit_class(&mut result);
+        TempSimplifier.visit_class(&mut result);
         Self::extract_field_initializers(&mut result);
         Ok(result)
     }
