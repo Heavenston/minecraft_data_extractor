@@ -55,6 +55,7 @@ fn decomp_block(
     pc: &mut usize,
     end: usize,
     stack: &mut Vec<decomped::Expression>,
+    next_temp: &mut u16,
 ) -> anyhow::Result<Vec<decomped::Statement>> {
     use minijvm::Instruction as Instr;
 
@@ -109,11 +110,11 @@ fn decomp_block(
                 if let Some((then_goto_idx, end_idx)) = then_goto {
                     let mut then_pc = then_start;
                     let mut then_stack = stack.clone();
-                    let then_branch = decomp_block(code, &mut then_pc, then_goto_idx, &mut then_stack)?;
+                    let then_branch = decomp_block(code, &mut then_pc, then_goto_idx, &mut then_stack, next_temp)?;
 
                     let mut else_pc = target;
                     let mut else_stack = stack.clone();
-                    let else_branch = decomp_block(code, &mut else_pc, end_idx, &mut else_stack)?;
+                    let else_branch = decomp_block(code, &mut else_pc, end_idx, &mut else_stack, next_temp)?;
 
                     let is_ternary = then_stack.len() == stack.len() + 1
                         && else_stack.len() == stack.len() + 1
@@ -139,7 +140,7 @@ fn decomp_block(
                 } else {
                     let mut then_pc = then_start;
                     let mut then_stack = stack.clone();
-                    let then_branch = decomp_block(code, &mut then_pc, target, &mut then_stack)?;
+                    let then_branch = decomp_block(code, &mut then_pc, target, &mut then_stack, next_temp)?;
 
                     if then_stack.len() == stack.len() {
                         *stack = then_stack;
@@ -164,6 +165,15 @@ fn decomp_block(
                     return Err(anyhow!("Not enough values on stack for dup"));
                 }
                 let start = stack.len() - depth - count;
+                for i in start..start + count {
+                    let temp_idx = *next_temp;
+                    *next_temp += 1;
+                    let expr = std::mem::replace(
+                        &mut stack[i],
+                        decomped::Expression::LoadTemp { index: temp_idx },
+                    );
+                    statements.push(decomped::Statement::StoreTemp { index: temp_idx, value: expr });
+                }
                 let to_dup: Vec<_> = stack[start..start + count].to_vec();
                 stack.extend(to_dup);
             }
@@ -314,7 +324,8 @@ impl DecompClassExtractor {
     fn decomp_code(code: &minijvm::Code) -> anyhow::Result<Vec<decomped::Statement>> {
         let mut stack = Vec::new();
         let mut pc = 0;
-        let statements = decomp_block(code, &mut pc, code.instructions.len(), &mut stack)?;
+        let mut next_temp = 0;
+        let statements = decomp_block(code, &mut pc, code.instructions.len(), &mut stack, &mut next_temp)?;
 
         if !stack.is_empty() {
             warn!("Stack isn't empty at the end of decompilation, is this a bug?");
@@ -359,7 +370,8 @@ impl DecompClassExtractor {
     fn extract_lambdas_in_statement(stmt: &mut decomped::Statement) {
         match stmt {
             decomped::Statement::Expression { expr } => Self::extract_lambdas_in_expression(expr),
-            decomped::Statement::Store { value, .. } => Self::extract_lambdas_in_expression(value),
+            decomped::Statement::Store { value, .. }
+            | decomped::Statement::StoreTemp { value, .. } => Self::extract_lambdas_in_expression(value),
             decomped::Statement::PutField { object, value, .. } => {
                 if let Some(obj) = object {
                     Self::extract_lambdas_in_expression(obj);
@@ -413,6 +425,7 @@ impl DecompClassExtractor {
         match expr {
             decomped::Expression::Constant { .. }
             | decomped::Expression::Load { .. }
+            | decomped::Expression::LoadTemp { .. }
             | decomped::Expression::New { .. }
             | decomped::Expression::Lambda { .. } => {}
             decomped::Expression::BinOp { lhs, rhs, .. } => {

@@ -74,6 +74,9 @@ pub enum Expression {
         value_kind: super::ValueKind,
         index: u16,
     },
+    LoadTemp {
+        index: u16,
+    },
     BinOp {
         op: super::BinOp,
         value_kind: super::ValueKind,
@@ -175,6 +178,7 @@ impl Expression {
         match self {
             Expression::Constant { value } => (100, value.printed()),
             Expression::Load { index, .. } => (100, ctx.local_name(*index)),
+            Expression::LoadTemp { index } => (100, format!("temp_{index}")),
             Expression::BinOp { op, lhs, rhs, .. } => {
                 let (prec, op_str) = op.printed_with_prec();
                 (prec, format!("{} {op_str} {}", lhs.printed_prec(ctx, prec), rhs.printed_prec(ctx, prec + 1)))
@@ -248,6 +252,10 @@ pub enum Statement {
         index: u16,
         value: Expression,
     },
+    StoreTemp {
+        index: u16,
+        value: Expression,
+    },
     PutField {
         is_static: bool,
         field: super::FieldRef,
@@ -296,6 +304,9 @@ impl Statement {
             Statement::Expression { expr } => format!("{ind}{};", expr.printed(ctx)),
             Statement::Store { index, value, .. } => {
                 format!("{ind}{} = {};", ctx.local_name(*index), value.printed(ctx))
+            }
+            Statement::StoreTemp { index, value } => {
+                format!("{ind}temp_{index} = {};", value.printed(ctx))
             }
             Statement::PutField { is_static, field, object, value } => {
                 let target = if *is_static {
