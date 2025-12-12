@@ -3,6 +3,7 @@
 mod version_manifest;
 use anyhow::{bail, Context};
 use futures::{ stream::FuturesUnordered, FutureExt as _, StreamExt };
+use itertools::Itertools as _;
 use version_client_json::VersionClientJson;
 use version_manifest::VersionManifestV2;
 mod version_client_json;
@@ -92,9 +93,10 @@ pub(crate) struct Args {
     /// Directory where all data should be downloaded
     #[arg(long, short, default_value = "mc_data")]
     output: PathBuf,
-    /// If specified, only download and extract the data for this version
+    /// If specified, only download and extract the data for the given version(s)
+    /// Can be given multiple times
     #[arg(short, long)]
-    minecraft_version: Option<String>,
+    minecraft_version: Vec<String>,
     /// How much versions can be processed in parallel
     #[arg(short, long, default_value_t = 3)]
     parallelism: usize,
@@ -260,18 +262,22 @@ async fn main() -> anyhow::Result<()> {
     let manifest = get_updated_manifest_file(&state).await?;
     info!(latest_release = manifest.latest.release, latest_snapshot = manifest.latest.snapshot, "Manifest loaded");
 
-    let selected_versions = if let Some(version_id) = state.args.minecraft_version.as_deref() {
-        let Some(selected_version) = manifest.versions.iter().find(|v| v.id == version_id)
-        else {
-            error!(selected_version_id = version_id, "Version not found");
+    let selected_versions = if !state.args.minecraft_version.is_empty() {
+        let not_found = state.args.minecraft_version.iter().filter(|v| {
+            !manifest.versions.iter().any(|mv| &mv.id == *v)
+        }).collect_vec();
+        if !not_found.is_empty() {
+            error!(versions = ?not_found, "Version not found");
             bail!("Version not found");
         };
 
-        vec![selected_version]
+        manifest.versions.iter()
+            .filter(|v| state.args.minecraft_version.contains(&v.id))
+            .collect_vec()
     } else {
         let mut selected_versions = manifest.versions.iter()
             .filter(|version| state.args.type_filter.is_empty() || state.args.type_filter.iter().any(|filter| filter.accepts(&version.ty)))
-            .collect::<Vec<_>>();
+            .collect_vec();
         selected_versions.sort_by_key(|v| std::cmp::Reverse(v.release_time));
         selected_versions
     };
