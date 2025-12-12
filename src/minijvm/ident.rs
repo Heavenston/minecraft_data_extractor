@@ -61,6 +61,10 @@ impl IdentPath {
         );
         Self(str)
     }
+
+    pub fn last_name(&self) -> &str {
+        self.0.rsplit('.').next().unwrap_or(&self.0)
+    }
 }
 
 impl Deref for IdentPath {

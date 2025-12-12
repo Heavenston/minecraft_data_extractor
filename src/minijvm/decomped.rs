@@ -1,7 +1,8 @@
 pub mod visitor;
 use super::{ Ident, IdentPath, TypeDescriptor, TypeDescriptorKind, MethodDescriptor, AccessFlags };
 
-use std::{fmt::Write, ops::Deref};
+use std::{borrow::Cow, fmt::Write, ops::Deref};
+use convert_case::ccase;
 
 pub struct ClassPrintContext<'a> {
     pub class: &'a Class,
@@ -17,6 +18,7 @@ pub struct MethodPrintContext<'a> {
     pub parent: &'a ClassPrintContext<'a>,
     pub is_static: bool,
     pub arg_slots: Vec<u16>,
+    pub arg_names: Vec<String>,
 }
 
 impl<'a> Deref for MethodPrintContext<'a> {
@@ -30,25 +32,45 @@ impl<'a> Deref for MethodPrintContext<'a> {
 impl<'a> MethodPrintContext<'a> {
     pub fn new(parent: &'a ClassPrintContext<'a>, is_static: bool, args: &[TypeDescriptor]) -> Self {
         let mut arg_slots = Vec::new();
+        let mut arg_names = Vec::new();
         let mut slot = if is_static { 0 } else { 1 };
-        for arg in args {
+        for (arg_idx, arg) in args.iter().enumerate() {
             arg_slots.push(slot);
             slot += match arg.ty {
                 TypeDescriptorKind::Long | TypeDescriptorKind::Double => 2,
                 _ => 1,
             };
+
+            let mut pretty_name = match &arg.ty {
+                TypeDescriptorKind::Object(o) => o.rsplit('.').next()
+                    .map(|l| ccase!(snake, l) /* Technically can make a reserved keyword, but hey... */)
+                    .unwrap_or_else(|| format!("arg{arg_idx}")),
+                k => format!("{k}0"),
+            };
+
+            let mut i = 0;
+            while arg_names.contains(&pretty_name) {
+                i += 1;
+                pretty_name = format!("{}{i}", pretty_name.trim_end_matches(char::is_numeric));
+            }
+
+            arg_names.push(pretty_name);
         }
-        Self { parent, is_static, arg_slots }
+        Self { parent, is_static, arg_slots, arg_names }
     }
 
-    pub fn local_name(&self, index: u16) -> String {
+    pub fn arg_name(&self, idx: usize) -> Cow<'_, str> {
+        return Cow::Borrowed(&self.arg_names[idx]);
+    }
+
+    pub fn local_name(&self, index: u16) -> Cow<'_, str> {
         if !self.is_static && index == 0 {
-            return "this".to_string();
+            return Cow::Borrowed("this");
         }
         if let Some(arg_idx) = self.arg_slots.iter().position(|&s| s == index) {
-            return format!("arg{arg_idx}");
+            return self.arg_name(arg_idx);
         }
-        format!("local_{index}")
+        Cow::Owned(format!("local_{index}"))
     }
 }
 
@@ -201,7 +223,7 @@ impl Expression {
     fn printed_inner(&self, ctx: &MethodPrintContext) -> (u8, String) {
         match self {
             Expression::Constant { value } => (100, value.printed()),
-            Expression::Load { index, .. } => (100, ctx.local_name(*index)),
+            Expression::Load { index, .. } => (100, ctx.local_name(*index).to_string()),
             Expression::LoadTemp { index } => (100, format!("temp_{index}")),
             Expression::BinOp { op, lhs, rhs, .. } => {
                 let (prec, op_str) = op.printed_with_prec();
@@ -429,11 +451,11 @@ impl Method {
         let modifiers = self.access_flags.printed();
         let args = self.descriptor.args.iter()
             .enumerate()
-            .map(|(i, ty)| format!("{ty} arg{i}"))
+            .map(|(i, ty)| format!("{ty} {}", ctx.arg_name(i)))
             .collect::<Vec<_>>()
             .join(", ");
 
-        let class_name = &*ctx.class.name;
+        let class_name = ctx.class.name.last_name();
 
         let mut s = match self.name.0.as_str() {
             "<clinit>" => "static {\n".to_string(),
@@ -470,7 +492,7 @@ impl Class {
     }
 
     pub fn printed(&self) -> String {
-        let simple_name = self.name.rsplit('.').next().unwrap_or(&self.name);
+        let simple_name = self.name.last_name();
         let ctx = ClassPrintContext::new(self);
 
         if self.is_enum() {
