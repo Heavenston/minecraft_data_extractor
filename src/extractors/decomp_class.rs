@@ -425,8 +425,9 @@ fn decomp_block(
                 stack.push(decomped::Expression::GetField { is_static: *is_static, field: field.clone(), object });
             }
             Instr::PutField { is_static, field } => {
+                let value = pop_stack(stack)?;
                 let object = if *is_static { None } else { Some(Box::new(pop_stack(stack)?)) };
-                statements.push(decomped::Statement::PutField { is_static: *is_static, field: field.clone(), object, value: pop_stack(stack)? });
+                statements.push(decomped::Statement::PutField { is_static: *is_static, field: field.clone(), object, value });
             }
             Instr::Return { kind } => {
                 let value = if let Some(kind) = kind {
