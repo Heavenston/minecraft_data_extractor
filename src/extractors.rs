@@ -5,6 +5,7 @@ pub mod mapped_class;
 pub mod mojang_mappings;
 pub mod read_class;
 pub mod decomp_class;
+pub mod packets;
 
 use std::any::Any;
 

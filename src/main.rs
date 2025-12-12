@@ -233,6 +233,9 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
         println!("{}", c.printed());
     }
 
+    let c = manager.extract(extractors::packets::PacketsExtractor).await?;
+    println!("{c:#?}");
+
     manager.finish().await?;
     
     Ok(())
