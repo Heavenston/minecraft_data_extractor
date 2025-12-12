@@ -32,6 +32,27 @@ impl Visitor for LambdaExtractor {
     }
 }
 
+struct UsesLocalExtractor {
+    pub uses_a_local: bool,
+}
+
+impl Visitor for UsesLocalExtractor {
+    fn visit_expression(&mut self, expr: &mut decomped::Expression) {
+        let uses_a_local = match expr {
+            decomped::Expression::Load { .. } |
+            decomped::Expression::LoadTemp { .. } => true,
+            _ => false,
+        };
+
+        if uses_a_local || self.uses_a_local {
+            self.uses_a_local = true;
+        }
+        else {
+            walk_expression(self, expr);
+        }
+    }
+}
+
 fn simplify_temps(statements: &mut Vec<decomped::Statement>) {
     struct UsageCounter(HashMap<u16, usize>);
 
@@ -553,7 +574,7 @@ impl DecompClassExtractor {
 
         let mut to_remove = Vec::new();
 
-        for (idx, stmt) in method.code.iter().enumerate() {
+        for (idx, stmt) in method.code.iter_mut().enumerate() {
             let decomped::Statement::PutField {
                 is_static: field_is_static,
                 field,
@@ -583,6 +604,13 @@ impl DecompClassExtractor {
             };
 
             if target_field.init_value.is_some() {
+                continue;
+            }
+
+            // If the found expression uses a local, we can't extract it from the method
+            let mut uses_local = UsesLocalExtractor { uses_a_local: false };
+            uses_local.visit_expression(value);
+            if uses_local.uses_a_local {
                 continue;
             }
 

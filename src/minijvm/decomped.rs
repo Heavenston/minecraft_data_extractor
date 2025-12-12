@@ -243,8 +243,13 @@ impl Expression {
                     && ctx.class.super_class.as_ref().zip(method.class.descriptor.simple_class_name()).is_some_and(|(a, b)| a == b)
                 ;
 
-                let s = if is_super_call && method.name.0 == "<init>" {
-                    format!("super({args_str})")
+                let s = if method.name.0 == "<init>" {
+                    if is_super_call {
+                        format!("super({args_str})")
+                    }
+                    else {
+                        format!("this({args_str})")
+                    }
                 } else if is_super_call {
                     format!("super.{}({args_str})", method.name.0)
                 } else {
