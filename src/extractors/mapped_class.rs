@@ -19,15 +19,6 @@ impl MappedClassExtractor {
                 descriptor: class_ref.descriptor.to_mapped(mappings),
             }
         };
-        let class_name_from_type = |ty: &minijvm::TypeDescriptor| -> Option<minijvm::IdentPath> {
-            match ty {
-                minijvm::TypeDescriptor {
-                    ty: minijvm::TypeDescriptorKind::Object(name),
-                    array_depth: 0,
-                } => Some(name.clone()),
-                _ => None,
-            }
-        };
         let type_from_class_name = |name: minijvm::IdentPath| -> minijvm::TypeDescriptor {
             minijvm::TypeDescriptor {
                 ty: minijvm::TypeDescriptorKind::Object(name),
@@ -35,7 +26,8 @@ impl MappedClassExtractor {
             }
         };
         let map_method_ref = |method_ref: &minijvm::MethodRef| -> minijvm::MethodRef {
-            let Some(class_name) = class_name_from_type(&method_ref.class.descriptor) else { return method_ref.clone() };
+            let Some(class_name) = method_ref.class.descriptor.simple_class_name()
+            else { return method_ref.clone() };
             let Some(mapped_class) = mappings.map_class(&*class_name)
             else { return method_ref.clone() };
             let descriptor = method_ref.descriptor.to_mapped(mappings);
@@ -52,7 +44,8 @@ impl MappedClassExtractor {
             }
         };
         let map_field_ref = |field_ref: &minijvm::FieldRef| -> minijvm::FieldRef {
-            let Some(class_name) = class_name_from_type(&field_ref.class.descriptor) else { return field_ref.clone() };
+            let Some(class_name) = field_ref.class.descriptor.simple_class_name()
+            else { return field_ref.clone() };
             let Some(mapped_class) = mappings.map_class(&*class_name)
             else { return field_ref.clone() };
             let descriptor = field_ref.descriptor.to_mapped(mappings);
@@ -177,7 +170,7 @@ impl super::ExtractorKind for MappedClassExtractor {
         else { bail!("No class with name '{}' in mappings", self.class) };
 
         let decomped_class = manager.extract(super::read_class::ReadClassExtractor {
-            class: (&**class_map.obfuscated_name).to_string(),
+            class: class_map.obfuscated_name.to_string(),
         }).await?;
 
         crate::spawn_cpu_bound(move || {

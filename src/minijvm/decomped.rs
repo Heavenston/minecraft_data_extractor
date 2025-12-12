@@ -1,15 +1,34 @@
 pub mod visitor;
 use super::{ Ident, IdentPath, TypeDescriptor, TypeDescriptorKind, MethodDescriptor, AccessFlags };
 
-use std::fmt::Write;
+use std::{fmt::Write, ops::Deref};
 
-pub struct PrintContext {
-    is_static: bool,
-    arg_slots: Vec<u16>,
+pub struct ClassPrintContext<'a> {
+    pub class: &'a Class,
 }
 
-impl PrintContext {
-    pub fn new(is_static: bool, args: &[TypeDescriptor]) -> Self {
+impl<'a> ClassPrintContext<'a> {
+    pub fn new(class: &'a Class) -> Self {
+        Self { class }
+    }
+}
+
+pub struct MethodPrintContext<'a> {
+    pub parent: &'a ClassPrintContext<'a>,
+    pub is_static: bool,
+    pub arg_slots: Vec<u16>,
+}
+
+impl<'a> Deref for MethodPrintContext<'a> {
+    type Target = ClassPrintContext<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        self.parent
+    }
+}
+
+impl<'a> MethodPrintContext<'a> {
+    pub fn new(parent: &'a ClassPrintContext<'a>, is_static: bool, args: &[TypeDescriptor]) -> Self {
         let mut arg_slots = Vec::new();
         let mut slot = if is_static { 0 } else { 1 };
         for arg in args {
@@ -19,7 +38,7 @@ impl PrintContext {
                 _ => 1,
             };
         }
-        Self { is_static, arg_slots }
+        Self { parent, is_static, arg_slots }
     }
 
     pub fn local_name(&self, index: u16) -> String {
@@ -166,11 +185,11 @@ pub enum Expression {
 }
 
 impl Expression {
-    pub fn printed(&self, ctx: &PrintContext) -> String {
+    pub fn printed(&self, ctx: &MethodPrintContext) -> String {
         self.printed_prec(ctx, 0)
     }
 
-    fn printed_prec(&self, ctx: &PrintContext, parent_prec: u8) -> String {
+    fn printed_prec(&self, ctx: &MethodPrintContext, parent_prec: u8) -> String {
         let (prec, s) = self.printed_inner(ctx);
         if prec < parent_prec {
             format!("({s})")
@@ -179,7 +198,7 @@ impl Expression {
         }
     }
 
-    fn printed_inner(&self, ctx: &PrintContext) -> (u8, String) {
+    fn printed_inner(&self, ctx: &MethodPrintContext) -> (u8, String) {
         match self {
             Expression::Constant { value } => (100, value.printed()),
             Expression::Load { index, .. } => (100, ctx.local_name(*index)),
@@ -192,11 +211,25 @@ impl Expression {
                 let op_str = op.printed();
                 (90, format!("{op_str}{}", operand.printed_prec(ctx, 90)))
             }
-            Expression::Invoke { method, object, args, .. } => {
+            Expression::Invoke { kind, method, object, args } => {
                 let args_str = args.iter().map(|a| a.printed(ctx)).collect::<Vec<_>>().join(", ");
-                let s = match object {
-                    Some(obj) => format!("{}.{}({args_str})", obj.printed_prec(ctx, 100), method.name.0),
-                    None => format!("{}.{}({args_str})", method.class.descriptor, method.name.0),
+
+                // I dont know right now how it works for interfaces so this is
+                // probably wrong for this cases, also not sure when going multiple
+                // classes up the hierarchy
+                let is_super_call = *kind == super::InvokeKind::Special
+                    && ctx.class.super_class.as_ref().zip(method.class.descriptor.simple_class_name()).is_some_and(|(a, b)| a == b)
+                ;
+
+                let s = if is_super_call && method.name.0 == "<init>" {
+                    format!("super({args_str})")
+                } else if is_super_call {
+                    format!("super.{}({args_str})", method.name.0)
+                } else {
+                    match object {
+                        Some(obj) => format!("{}.{}({args_str})", obj.printed_prec(ctx, 100), method.name.0),
+                        None => format!("{}.{}({args_str})", method.class.descriptor, method.name.0),
+                    }
                 };
                 (100, s)
             }
@@ -302,11 +335,11 @@ pub enum Statement {
 }
 
 impl Statement {
-    pub fn printed(&self, ctx: &PrintContext) -> String {
+    pub fn printed(&self, ctx: &MethodPrintContext) -> String {
         self.printed_indent(ctx, 0)
     }
 
-    fn printed_indent(&self, ctx: &PrintContext, indent: usize) -> String {
+    fn printed_indent(&self, ctx: &MethodPrintContext, indent: usize) -> String {
         let ind = "    ".repeat(indent);
         match self {
             Statement::Expression { expr } => format!("{ind}{};", expr.printed(ctx)),
@@ -373,11 +406,10 @@ pub struct Field {
 }
 
 impl Field {
-    pub fn printed(&self) -> String {
+    pub fn printed(&self, ctx: &ClassPrintContext) -> String {
         let modifiers = self.access_flags.printed();
-        let ctx = PrintContext::new(true, &[]);
         let init = self.init_value.as_ref()
-            .map(|v| format!(" = {}", v.printed(&ctx)))
+            .map(|v| format!(" = {}", v.printed(&MethodPrintContext::new(ctx, self.access_flags.static_, &[]))))
             .unwrap_or_default();
         format!("{modifiers}{} {}{init};", self.descriptor, self.name.0)
     }
@@ -392,14 +424,16 @@ pub struct Method {
 }
 
 impl Method {
-    pub fn printed(&self, class_name: &str) -> String {
-        let ctx = PrintContext::new(self.access_flags.static_, &self.descriptor.args);
+    pub fn printed(&self, ctx: &ClassPrintContext) -> String {
+        let ctx = MethodPrintContext::new(ctx, self.access_flags.static_, &self.descriptor.args);
         let modifiers = self.access_flags.printed();
         let args = self.descriptor.args.iter()
             .enumerate()
             .map(|(i, ty)| format!("{ty} arg{i}"))
             .collect::<Vec<_>>()
             .join(", ");
+
+        let class_name = &*ctx.class.name;
 
         let mut s = match self.name.0.as_str() {
             "<clinit>" => "static {\n".to_string(),
@@ -436,8 +470,8 @@ impl Class {
     }
 
     pub fn printed(&self) -> String {
-        let simple_name = self.name.0.rsplit('.').next().unwrap_or(&self.name.0);
-        let ctx = PrintContext::new(true, &[]);
+        let simple_name = self.name.rsplit('.').next().unwrap_or(&self.name);
+        let ctx = ClassPrintContext::new(self);
 
         if self.is_enum() {
             let mut s = format!("enum {simple_name} {{\n");
@@ -446,7 +480,7 @@ impl Class {
                 let args_str = if variant.args.is_empty() {
                     String::new()
                 } else {
-                    let args = variant.args.iter().map(|a| a.printed(&ctx)).collect::<Vec<_>>().join(", ");
+                    let args = variant.args.iter().map(|a| a.printed(&MethodPrintContext::new(&ctx, true, &[]))).collect::<Vec<_>>().join(", ");
                     format!("({args})")
                 };
                 let suffix = if i + 1 < self.enum_variants.len() { "," } else { ";" };
@@ -456,14 +490,14 @@ impl Class {
             if !self.fields.is_empty() {
                 s.push('\n');
                 for field in &self.fields {
-                    let _ = writeln!(s, "    {}", field.printed());
+                    let _ = writeln!(s, "    {}", field.printed(&ctx));
                 }
             }
 
             if !self.methods.is_empty() {
                 s.push('\n');
                 for method in &self.methods {
-                    for line in method.printed(simple_name).lines() {
+                    for line in method.printed(&ctx).lines() {
                         let _ = writeln!(s, "    {line}");
                     }
                     s.push('\n');
@@ -474,18 +508,18 @@ impl Class {
             s
         } else {
             let extends = self.super_class.as_ref()
-                .filter(|s| s.0 != "java.lang.Object")
-                .map(|s| format!(" extends {}", s.0))
+                .filter(|&s| s != "java.lang.Object")
+                .map(|s| format!(" extends {}", s))
                 .unwrap_or_default();
             let mut s = format!("class {simple_name}{extends} {{\n");
             for field in &self.fields {
-                let _ = writeln!(s, "    {}", field.printed());
+                let _ = writeln!(s, "    {}", field.printed(&ctx));
             }
             if !self.fields.is_empty() && !self.methods.is_empty() {
                 s.push('\n');
             }
             for method in &self.methods {
-                for line in method.printed(simple_name).lines() {
+                for line in method.printed(&ctx).lines() {
                     let _ = writeln!(s, "    {line}");
                 }
                 s.push('\n');

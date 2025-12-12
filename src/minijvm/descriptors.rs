@@ -79,7 +79,7 @@ impl std::fmt::Debug for TypeDescriptorKind {
             TypeDescriptorKind::Short => write!(f, "S"),
             TypeDescriptorKind::Boolean => write!(f, "Z"),
             TypeDescriptorKind::Void => write!(f, "V"),
-            TypeDescriptorKind::Object(o) => write!(f, "L{};", o.0.replace(".", "/")),
+            TypeDescriptorKind::Object(o) => write!(f, "L{};", o.replace(".", "/")),
         }
     }
 }
@@ -125,6 +125,13 @@ impl TypeDescriptor {
         Self {
             ty: self.ty.to_mapped(mappings).unwrap_or_else(|| self.ty.clone()),
             array_depth: self.array_depth,
+        }
+    }
+
+    pub fn simple_class_name(&self) -> Option<&IdentPath> {
+        match self {
+            Self { array_depth: 0, ty: TypeDescriptorKind::Object(h) } => Some(h),
+            _ => None,
         }
     }
 }
