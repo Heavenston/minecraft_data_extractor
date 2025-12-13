@@ -1,7 +1,9 @@
+use anyhow::{anyhow, bail};
 use tracing::warn;
 
 use crate::extractors::decomp_class;
-
+use crate::minijvm::decomped::visitor::{ walk_expression, Visitor };
+use crate::{ minijvm::{ self, decomped } };
 
 #[derive(Debug, Clone, bincode::Decode, bincode::Encode)]
 pub struct Packets {
@@ -23,13 +25,59 @@ impl super::ExtractorKind for PacketsExtractor {
     }
 }
 
+struct AddedPacket {
+    packet_class_name: minijvm::ClassRef,
+    packet_type_field: minijvm::FieldRef,
+}
+
+#[derive(Default)]
+struct AddPacketVisitor {
+    packets: Vec<AddedPacket>,
+}
+
+impl Visitor for AddPacketVisitor {
+    fn visit_expression(&mut self, expr: &mut decomped::Expression) -> anyhow::Result<()> {
+        walk_expression(self, expr)?;
+
+        match expr {
+            decomped::Expression::Invoke { method, args, .. }
+                if method.name.0 == "addPacket"
+            => {
+                let Some(packet_class_name) = (match args.get(0) {
+                    Some(decomped::Expression::GetField { field, .. }) => Some(field.class.clone()),
+                    _ => None,
+                }) else { bail!("Could not get packet class name") };
+                let Some(packet_type_field) = (match args.get(1) {
+                    Some(decomped::Expression::GetField { field, .. }) => Some(field.clone()),
+                    _ => None,
+                }) else { bail!("Could not get packet type field") };
+
+                self.packets.push(AddedPacket {
+                    packet_class_name,
+                    packet_type_field,
+                });
+            },
+            _ => (),
+        }
+
+        Ok(())
+    }
+}
+
 async fn extract_modern(manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Packets> {
-    let protocols = vec![
-        manager.extract(decomp_class::DecompClassExtractor {
-            class: "net.minecraft.network.protocol.handshake.HandshakeProtocols".to_string(),
-            mappings_brand: crate::mappings::Brand::Mojmaps,
-        }).await?
+    let protocols_names = vec![
+        "net.minecraft.network.protocol.handshake.HandshakeProtocols",
+        "net.minecraft.network.protocol.login.LoginProtocols",
     ];
+    let mut protocols = Vec::new();
+    for class_name in protocols_names {
+        protocols.push(
+            manager.extract(decomp_class::DecompClassExtractor {
+                class: class_name.to_string(),
+                mappings_brand: crate::mappings::Brand::Mojmaps,
+            }).await?
+        );
+    }
 
     for protocol in &protocols {
         let serverbound_template = protocol.fields.iter().find(|l| l.access_flags.static_ && l.name.0 == "SERVERBOUND_TEMPLATE");
@@ -39,17 +87,37 @@ async fn extract_modern(manager: &mut super::ExtractionManager<'_>) -> anyhow::R
             let Some(init_value) = &serverbound_template.init_value
             else { warn!("Found no serverbound init value"); break 'serverbound };
 
-            let ctx = crate::minijvm::decomped::ClassPrintContext::new(&protocol);
-            let ctx = crate::minijvm::decomped::MethodPrintContext::new(&ctx, true, &[]);
-            println!("serverbound -> {}", init_value.printed(&ctx));
+            // Find the name of the method (it's actually a lambda, compiled into a method)
+            // that adds all packets of this protocol
+            let add_packets_method_name = match init_value {
+                decomped::Expression::Invoke { method: minijvm::MethodRef { name: method_name, .. }, args, .. }
+                    if &method_name.0 == "serverboundProtocol"
+                => {
+                    match &args[0] {
+                        decomped::Expression::Lambda { target, .. } => &target.name,
+                        _ => {
+                            warn!(arg = ?args[0], "Unexpected first argument of serverboundProtocol"); break 'serverbound;
+                        },
+                    }
+                },
+                _ => {
+                    warn!(?init_value, "Unexpected init value for SERVERBOUND_TEMPLATE"); break 'serverbound;
+                },
+            };
+
+            let Some(add_packets_method) = protocol.methods.iter().find(|m| &m.name == add_packets_method_name)
+            else { bail!("Could not find method {add_packets_method_name}") };
+
+            let ctx = decomped::ClassPrintContext::new(&protocol);
+            println!("serverbound -> {}", add_packets_method.printed(&ctx));
         }}
 
         if let Some(clientbound_template) = clientbound_template { 'clientbound: {
             let Some(init_value) = &clientbound_template.init_value
             else { warn!("Found no clientbound init value"); break 'clientbound };
 
-            let ctx = crate::minijvm::decomped::ClassPrintContext::new(&protocol);
-            let ctx = crate::minijvm::decomped::MethodPrintContext::new(&ctx, true, &[]);
+            let ctx = decomped::ClassPrintContext::new(&protocol);
+            let ctx = decomped::MethodPrintContext::new(&ctx, true, &[]);
             println!("clientbound -> {}", init_value.printed(&ctx));
         }}
     }

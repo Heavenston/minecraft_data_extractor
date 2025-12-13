@@ -8,27 +8,27 @@ use itertools::Itertools;
 struct LambdaExtractor;
 
 impl Visitor for LambdaExtractor {
-    fn visit_expression(&mut self, expr: &mut decomped::Expression) {
+    fn visit_expression(&mut self, expr: &mut decomped::Expression) -> anyhow::Result<()> {
         if let decomped::Expression::InvokeDynamic { call_site, name, args, .. } = expr {
             if call_site.bootstrap.class.descriptor.to_string() == "java.lang.invoke.LambdaMetafactory" {
                 if let Some(minijvm::Constant::MethodHandle(handle)) = call_site.static_args.get(1) {
                     if let minijvm::MethodHandleRef::Method(target) = &handle.reference {
                         let mut captures = std::mem::take(args);
                         for capture in &mut captures {
-                            self.visit_expression(capture);
+                            self.visit_expression(capture)?;
                         }
                         *expr = decomped::Expression::Lambda {
                             target: target.clone(),
                             interface_method: name.clone(),
                             captures,
                         };
-                        return;
+                        return Ok(());
                     }
                 }
             }
         }
 
-        walk_expression(self, expr);
+        walk_expression(self, expr)
     }
 }
 
@@ -37,7 +37,7 @@ struct UsesLocalExtractor {
 }
 
 impl Visitor for UsesLocalExtractor {
-    fn visit_expression(&mut self, expr: &mut decomped::Expression) {
+    fn visit_expression(&mut self, expr: &mut decomped::Expression) -> anyhow::Result<()> {
         let uses_a_local = match expr {
             decomped::Expression::Load { .. } |
             decomped::Expression::LoadTemp { .. } => true,
@@ -48,20 +48,23 @@ impl Visitor for UsesLocalExtractor {
             self.uses_a_local = true;
         }
         else {
-            walk_expression(self, expr);
+            walk_expression(self, expr)?;
         }
+
+        Ok(())
     }
 }
 
-fn simplify_temps(statements: &mut Vec<decomped::Statement>) {
+fn simplify_temps(statements: &mut Vec<decomped::Statement>) -> anyhow::Result<()> {
     struct UsageCounter(HashMap<u16, usize>);
 
     impl Visitor for UsageCounter {
-        fn visit_expression(&mut self, expr: &mut decomped::Expression) {
+        fn visit_expression(&mut self, expr: &mut decomped::Expression) -> anyhow::Result<()> {
             if let decomped::Expression::LoadTemp { index } = expr {
                 *self.0.entry(*index).or_default() += 1;
             }
-            walk_expression(self, expr);
+
+            walk_expression(self, expr)
         }
     }
 
@@ -70,21 +73,21 @@ fn simplify_temps(statements: &mut Vec<decomped::Statement>) {
     }
 
     impl Visitor for TempInliner {
-        fn visit_expression(&mut self, expr: &mut decomped::Expression) {
-            if let decomped::Expression::LoadTemp { index } = expr {
-                if let Some(value) = self.values.remove(index) {
-                    *expr = value;
-                    self.visit_expression(expr);
-                    return;
-                }
+        fn visit_expression(&mut self, expr: &mut decomped::Expression) -> anyhow::Result<()> {
+            if let decomped::Expression::LoadTemp { index } = expr && let Some(value) = self.values.remove(index) {
+                *expr = value;
+                self.visit_expression(expr)?;
+                Ok(())
             }
-            walk_expression(self, expr);
+            else {
+                walk_expression(self, expr)
+            }
         }
     }
 
     let mut usage_counts = UsageCounter(HashMap::new());
     for stmt in statements.iter_mut() {
-        usage_counts.visit_statement(stmt);
+        usage_counts.visit_statement(stmt)?;
     }
 
     let mut values_to_inline = HashMap::new();
@@ -103,41 +106,47 @@ fn simplify_temps(statements: &mut Vec<decomped::Statement>) {
 
     let mut inliner = TempInliner { values: values_to_inline };
     for stmt in statements.iter_mut() {
-        inliner.visit_statement(stmt);
+        inliner.visit_statement(stmt)?;
     }
 
     for idx in indices_to_remove.into_iter().rev() {
         statements.remove(idx);
     }
+
+    Ok(())
 }
 
 struct TempSimplifier;
 
 impl TempSimplifier {
-    fn simplify_block(&mut self, statements: &mut Vec<decomped::Statement>) {
-        simplify_temps(statements);
+    fn simplify_block(&mut self, statements: &mut Vec<decomped::Statement>) -> anyhow::Result<()> {
+        simplify_temps(statements)?;
         for stmt in statements {
-            self.visit_statement(stmt);
+            self.visit_statement(stmt)?;
         }
+        Ok(())
     }
 }
 
 impl Visitor for TempSimplifier {
-    fn visit_method(&mut self, method: &mut decomped::Method) {
-        self.simplify_block(&mut method.code);
+    fn visit_method(&mut self, method: &mut decomped::Method) -> anyhow::Result<()> {
+        self.simplify_block(&mut method.code)?;
+        Ok(())
     }
 
-    fn visit_statement(&mut self, stmt: &mut decomped::Statement) {
+    fn visit_statement(&mut self, stmt: &mut decomped::Statement) -> anyhow::Result<()> {
         match stmt {
             decomped::Statement::If { then_branch, else_branch, .. } => {
-                self.simplify_block(then_branch);
-                self.simplify_block(else_branch);
+                self.simplify_block(then_branch)?;
+                self.simplify_block(else_branch)?;
             }
             decomped::Statement::While { body, .. } => {
-                self.simplify_block(body);
+                self.simplify_block(body)?;
             }
             _ => {}
         }
+
+        Ok(())
     }
 }
 
@@ -517,9 +526,9 @@ impl DecompClassExtractor {
             }).collect(),
         };
 
-        LambdaExtractor.visit_class(&mut result);
-        TempSimplifier.visit_class(&mut result);
-        Self::extract_field_initializers(&mut result);
+        LambdaExtractor.visit_class(&mut result)?;
+        TempSimplifier.visit_class(&mut result)?;
+        Self::extract_field_initializers(&mut result)?;
 
         if class.access_flags.enum_ {
             Self::extract_enum_variants(&mut result);
@@ -555,9 +564,9 @@ impl DecompClassExtractor {
 
     /// Finds and remove `PutField` expressions from `<clinit>` and `<init>`
     /// into the Field itself
-    fn extract_field_initializers(class: &mut decomped::Class) {
-        Self::extract_from_initializer(class, "<clinit>", true);
-        Self::extract_from_initializer(class, "<init>", false);
+    fn extract_field_initializers(class: &mut decomped::Class) -> anyhow::Result<()> {
+        Self::extract_from_initializer(class, "<clinit>", true)?;
+        Self::extract_from_initializer(class, "<init>", false)?;
 
         class.methods.retain(|m| {
             if m.name.0 != "<clinit>" && m.name.0 != "<init>" {
@@ -565,11 +574,13 @@ impl DecompClassExtractor {
             }
             !Self::is_empty_initializer(&m.code)
         });
+
+        Ok(())
     }
 
-    fn extract_from_initializer(class: &mut decomped::Class, method_name: &str, is_static: bool) {
+    fn extract_from_initializer(class: &mut decomped::Class, method_name: &str, is_static: bool) -> anyhow::Result<()> {
         let Some(method) = class.methods.iter_mut().find(|m| m.name.0 == method_name) else {
-            return;
+            return Ok(());
         };
 
         let mut to_remove = Vec::new();
@@ -609,7 +620,7 @@ impl DecompClassExtractor {
 
             // If the found expression uses a local, we can't extract it from the method
             let mut uses_local = UsesLocalExtractor { uses_a_local: false };
-            uses_local.visit_expression(value);
+            uses_local.visit_expression(value)?;
             if uses_local.uses_a_local {
                 continue;
             }
@@ -621,6 +632,8 @@ impl DecompClassExtractor {
         for idx in to_remove.into_iter().rev() {
             method.code.remove(idx);
         }
+
+        Ok(())
     }
 
     fn is_empty_initializer(code: &[decomped::Statement]) -> bool {
