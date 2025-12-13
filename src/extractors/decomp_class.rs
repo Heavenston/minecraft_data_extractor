@@ -816,7 +816,8 @@ impl DecompClassExtractor {
                 name: field.name.clone(),
                 descriptor: field.descriptor.clone(),
                 access_flags: field.access_flags.clone(),
-                init_value: None,
+                // FIXME: Is it correct to convert to an expression?
+                init_value: field.constant_value.as_ref().map(|value| decomped::Expression::Constant { value: convert_constant(value) }),
             }).collect(),
         };
 
