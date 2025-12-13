@@ -191,11 +191,11 @@ pub(super) async fn extract_using_protocols(manager: &mut extractors::Extraction
             let mut added_packet = AddPacketVisitor::default();
             added_packet.visit_method(add_packets_method)?;
 
-            for p in &added_packet.packets {
-                let packet = match extract_packet(manager, &p.packet_class_name).await {
+            for added_packet in &added_packet.packets {
+                let packet = match extract_packet(manager, &added_packet.packet_class_name).await {
                     Ok(p) => p,
-                    Err(e) => {
-                        error!(error = %e, ?p, "Error while reading packet");
+                    Err(error) => {
+                        error!(%error, ?added_packet, "Error while reading packet");
                         continue;
                     },
                 };
