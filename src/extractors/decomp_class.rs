@@ -489,10 +489,41 @@ fn decomp_block(
                     .collect();
                 branches.sort_by_key(|(start, _, _)| *start);
 
+                if branches.is_empty() {
+                    warn!("Switch instruction has no valid branches");
+                    *pc += 1;
+                    continue;
+                }
+
+                let min_start = branches.first().map(|(s, _, _)| *s).unwrap();
+                let max_start = branches.last().map(|(s, _, _)| *s).unwrap();
+
+                // Try to find a common "break" target for the switch: an
+                // unconditional goto that jumps past all branch entry points.
+                // This is used as the end of the structured switch so that
+                // shared tail code (like a final `return`) is kept outside
+                // the default branch body.
+                let mut switch_end = code.instructions.len();
+                for idx in min_start..code.instructions.len() {
+                    if let Instr::Goto { offset, cond: None } = &code.instructions[idx] {
+                        if *offset >= 0 {
+                            let target = *offset as usize;
+                            if target > max_start && target < switch_end {
+                                switch_end = target;
+                            }
+                        }
+                    }
+                }
+
+                if switch_end == code.instructions.len() {
+                    // No obvious common break target; treat the end of the
+                    // method as the end of the switch.
+                    switch_end = code.instructions.len();
+                }
+
                 let base_stack = stack.clone();
                 let mut cases_out = Vec::new();
                 let mut default_body = Vec::new();
-                let mut max_end = (*pc + 1).min(code.instructions.len());
 
                 for (idx, (start, values, is_default)) in branches.iter().enumerate() {
                     if *start >= code.instructions.len() {
@@ -500,14 +531,14 @@ fn decomp_block(
                         continue;
                     }
 
-                    let next_start = branches.get(idx + 1).map(|(s, _, _)| *s).unwrap_or(code.instructions.len());
-                    let mut branch_end = next_start.min(code.instructions.len());
+                    let next_start = branches.get(idx + 1).map(|(s, _, _)| *s).unwrap_or(switch_end);
+                    let mut branch_end = next_start.min(switch_end);
 
                     for scan_idx in *start..branch_end {
                         if let Instr::Goto { offset, cond: None } = &code.instructions[scan_idx] {
                             if *offset >= 0 {
                                 let target = *offset as usize;
-                                if target >= next_start {
+                                if target >= switch_end {
                                     branch_end = scan_idx;
                                     break;
                                 }
@@ -522,8 +553,6 @@ fn decomp_block(
                     if branch_stack.len() != base_stack.len() {
                         warn!(branch_start = *start, "Switch branch leaves inconsistent stack depth");
                     }
-
-                    max_end = max_end.max(branch_end);
 
                     if *is_default {
                         default_body = body.clone();
@@ -544,7 +573,7 @@ fn decomp_block(
                 });
 
                 *stack = base_stack;
-                *pc = max_end;
+                *pc = switch_end;
                 continue;
             }
             Instr::Return { kind } => {
