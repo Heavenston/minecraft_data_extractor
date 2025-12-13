@@ -20,7 +20,7 @@ impl ReadClassExtractor {
     fn read_class(server_jar_path: &Path, class: &str) -> anyhow::Result<minijvm::Class> {
         use noak::reader::cpool as cpool;
         use noak::reader::attributes::{ RawInstruction as RI, Index as CodeIndex, ArrayType as AT };
-        use minijvm::{ GotoCondition, IfOperand, IfCmp, BinOp, UnOp, Instruction as MiniInstr, ValueKind as VK, ConstantValue as CV };
+        use minijvm::{ GotoCondition, IfOperand, IfCmp, BinOp, UnOp, Instruction as MiniInstr, SwitchCaseTarget, ValueKind as VK, ConstantValue as CV };
 
         let _span = tracing::trace_span!("Reading class", ?server_jar_path, class);
         let server_jar_file = std::fs::File::open(&*server_jar_path)?;
@@ -522,7 +522,28 @@ impl ReadClassExtractor {
                     RI::LLoad3                           => instructions.push(MiniInstr::Load           { kind: VK::Long, index: 3 }),
                     RI::LMul                             => instructions.push(MiniInstr::BinOp          { op: BinOp::Mul, value_kind: VK::Long }),
                     RI::LNeg                             => instructions.push(MiniInstr::UnOp           { op: UnOp::Neg, value_kind: VK::Long }),
-                    RI::LookupSwitch(..)                 => unknown!(),
+                    RI::LookupSwitch(lookup)             => {
+                        let default_pc = pc + lookup.default_offset();
+                        let Some(&default_target) = pc_to_index.get(&default_pc) else {
+                            warn!(pc, default_pc, "Invalid lookup switch default target");
+                            continue;
+                        };
+
+                        let mut cases = Vec::new();
+                        for pair in lookup.pairs() {
+                            let target_pc = pc + pair.offset();
+                            let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                                warn!(pc, target_pc, key = pair.key(), "Invalid lookup switch case target");
+                                continue;
+                            };
+                            cases.push(SwitchCaseTarget { value: pair.key(), target: target_idx as i32 });
+                        }
+
+                        instructions.push(MiniInstr::LookupSwitch {
+                            default_target: default_target as i32,
+                            cases,
+                        });
+                    },
                     RI::LOr                              => instructions.push(MiniInstr::BinOp          { op: BinOp::BitOr, value_kind: VK::Long }),
                     RI::LRem                             => instructions.push(MiniInstr::BinOp          { op: BinOp::Rem, value_kind: VK::Long }),
                     RI::LReturn                          => instructions.push(MiniInstr::Return         { kind: Some(VK::Long) }),
@@ -565,7 +586,28 @@ impl ReadClassExtractor {
                     RI::SAStore                          => instructions.push(MiniInstr::StoreIntoArray { kind: VK::Short }),
                     RI::SIPush { value }                 => instructions.push(MiniInstr::Constant       { value: CV::Short(value) }),
                     RI::Swap                             => instructions.push(MiniInstr::Swap),
-                    RI::TableSwitch(..)                  => unknown!(),
+                    RI::TableSwitch(table)               => {
+                        let default_pc = pc + table.default_offset();
+                        let Some(&default_target) = pc_to_index.get(&default_pc) else {
+                            warn!(pc, default_pc, "Invalid table switch default target");
+                            continue;
+                        };
+
+                        let mut cases = Vec::new();
+                        for pair in table.pairs() {
+                            let target_pc = pc + pair.offset();
+                            let Some(&target_idx) = pc_to_index.get(&target_pc) else {
+                                warn!(pc, target_pc, key = pair.key(), "Invalid table switch case target");
+                                continue;
+                            };
+                            cases.push(SwitchCaseTarget { value: pair.key(), target: target_idx as i32 });
+                        }
+
+                        instructions.push(MiniInstr::TableSwitch {
+                            default_target: default_target as i32,
+                            cases,
+                        });
+                    },
                 }
             }
             Ok(minijvm::Code { instructions })

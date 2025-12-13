@@ -379,6 +379,12 @@ pub struct GotoCondition {
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub struct SwitchCaseTarget {
+    pub value: i32,
+    pub target: i32,
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum Instruction {
     Noop,
     Dup {
@@ -447,6 +453,15 @@ pub enum Instruction {
     Return {
         /// If none this instruction returns void
         kind: Option<ValueKind>,
+    },
+
+    LookupSwitch {
+        default_target: i32,
+        cases: Vec<SwitchCaseTarget>,
+    },
+    TableSwitch {
+        default_target: i32,
+        cases: Vec<SwitchCaseTarget>,
     },
 
     Throw,

@@ -311,6 +311,12 @@ impl Expression {
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub struct SwitchCase {
+    pub values: Vec<i32>,
+    pub body: Vec<Statement>,
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum Statement {
     Expression {
         expr: Expression,
@@ -358,6 +364,12 @@ pub enum Statement {
     While {
         condition: Expression,
         body: Vec<Statement>,
+    },
+
+    Switch {
+        value: Expression,
+        cases: Vec<SwitchCase>,
+        default: Vec<Statement>,
     },
 }
 
@@ -415,6 +427,25 @@ impl Statement {
                 let mut s = format!("{ind}while ({}) {{\n", condition.printed(ctx));
                 for stmt in body {
                     let _ = writeln!(s, "{}", stmt.printed_indent(ctx, indent + 1));
+                }
+                write!(s, "{ind}}}").unwrap();
+                s
+            }
+            Statement::Switch { value, cases, default } => {
+                let mut s = format!("{ind}switch ({}) {{\n", value.printed(ctx));
+                for case in cases {
+                    for value in &case.values {
+                        let _ = writeln!(s, "{ind}    case {value}:");
+                    }
+                    for stmt in &case.body {
+                        let _ = writeln!(s, "{}", stmt.printed_indent(ctx, indent + 2));
+                    }
+                }
+                if !default.is_empty() {
+                    let _ = writeln!(s, "{ind}    default:");
+                    for stmt in default {
+                        let _ = writeln!(s, "{}", stmt.printed_indent(ctx, indent + 2));
+                    }
                 }
                 write!(s, "{ind}}}").unwrap();
                 s

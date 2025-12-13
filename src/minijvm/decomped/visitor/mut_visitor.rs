@@ -83,6 +83,17 @@ pub fn walk_statement<V: MutVisitor + ?Sized>(v: &mut V, stmt: &mut Statement) -
                 v.visit_statement(stmt)?;
             }
         }
+        Statement::Switch { value, cases, default } => {
+            v.visit_expression(value)?;
+            for case in cases {
+                for stmt in &mut case.body {
+                    v.visit_statement(stmt)?;
+                }
+            }
+            for stmt in default {
+                v.visit_statement(stmt)?;
+            }
+        }
     }
 
     Ok(())

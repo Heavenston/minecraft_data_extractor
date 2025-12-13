@@ -461,6 +461,92 @@ fn decomp_block(
                 let object = if *is_static { None } else { Some(Box::new(pop_stack(stack)?)) };
                 statements.push(decomped::Statement::PutField { is_static: *is_static, field: field.clone(), object, value });
             }
+            Instr::LookupSwitch { default_target, cases } |
+            Instr::TableSwitch { default_target, cases } => {
+                let switch_value = pop_stack(stack)?;
+
+                if *default_target < 0 {
+                    warn!(target = default_target, "LookupSwitch has negative default target");
+                    *pc += 1;
+                    continue;
+                }
+
+                let default_idx = *default_target as usize;
+
+                let mut targets: HashMap<usize, (Vec<i32>, bool)> = HashMap::new();
+                targets.insert(default_idx, (Vec::new(), true));
+                for case in cases {
+                    if case.target < 0 {
+                        warn!(target = case.target, value = case.value, "LookupSwitch case target is negative");
+                        continue;
+                    }
+                    let entry = targets.entry(case.target as usize).or_insert_with(|| (Vec::new(), case.target as usize == default_idx));
+                    entry.0.push(case.value);
+                }
+
+                let mut branches: Vec<_> = targets.into_iter()
+                    .map(|(start, (values, is_default))| (start, values, is_default))
+                    .collect();
+                branches.sort_by_key(|(start, _, _)| *start);
+
+                let base_stack = stack.clone();
+                let mut cases_out = Vec::new();
+                let mut default_body = Vec::new();
+                let mut max_end = (*pc + 1).min(code.instructions.len());
+
+                for (idx, (start, values, is_default)) in branches.iter().enumerate() {
+                    if *start >= code.instructions.len() {
+                        warn!(target = *start, "LookupSwitch target out of bounds");
+                        continue;
+                    }
+
+                    let next_start = branches.get(idx + 1).map(|(s, _, _)| *s).unwrap_or(code.instructions.len());
+                    let mut branch_end = next_start.min(code.instructions.len());
+
+                    for scan_idx in *start..branch_end {
+                        if let Instr::Goto { offset, cond: None } = &code.instructions[scan_idx] {
+                            if *offset >= 0 {
+                                let target = *offset as usize;
+                                if target >= next_start {
+                                    branch_end = scan_idx;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    let mut branch_pc = *start;
+                    let mut branch_stack = base_stack.clone();
+                    let body = decomp_block(code, &mut branch_pc, branch_end, &mut branch_stack, next_temp)?;
+
+                    if branch_stack.len() != base_stack.len() {
+                        warn!(branch_start = *start, "Switch branch leaves inconsistent stack depth");
+                    }
+
+                    max_end = max_end.max(branch_end);
+
+                    if *is_default {
+                        default_body = body.clone();
+                    }
+                    if !values.is_empty() {
+                        let mut sorted_values = values.clone();
+                        sorted_values.sort_unstable();
+                        cases_out.push(decomped::SwitchCase { values: sorted_values, body });
+                    }
+                }
+
+                cases_out.sort_by_key(|c| c.values.first().copied().unwrap_or(i32::MAX));
+
+                statements.push(decomped::Statement::Switch {
+                    value: switch_value,
+                    cases: cases_out,
+                    default: default_body,
+                });
+
+                *stack = base_stack;
+                *pc = max_end;
+                continue;
+            }
             Instr::Return { kind } => {
                 let value = if let Some(kind) = kind {
                     Some((kind.clone(), pop_stack(stack)?))
