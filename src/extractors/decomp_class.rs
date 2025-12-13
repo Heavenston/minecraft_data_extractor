@@ -1,5 +1,6 @@
-use crate::{mappings, minijvm::{self, decomped::{self, visitor::mut_visitor as mv}}};
+use crate::{mappings, minijvm::{self, decomped::{self, visitor::{mut_visitor as mv, ref_visitor as rv}}}};
 use mv::MutVisitor;
+use rv::RefVisitor;
 
 use std::collections::HashMap;
 use anyhow::anyhow;
@@ -37,8 +38,8 @@ struct UsesLocalExtractor {
     pub uses_a_local: bool,
 }
 
-impl mv::MutVisitor for UsesLocalExtractor {
-    fn visit_expression(&mut self, expr: &mut decomped::Expression) -> anyhow::Result<()> {
+impl rv::RefVisitor for UsesLocalExtractor {
+    fn visit_expression(&mut self, expr: &decomped::Expression) -> anyhow::Result<()> {
         let uses_a_local = match expr {
             decomped::Expression::Load { .. } |
             decomped::Expression::LoadTemp { .. } => true,
@@ -49,7 +50,7 @@ impl mv::MutVisitor for UsesLocalExtractor {
             self.uses_a_local = true;
         }
         else {
-            mv::walk_expression(self, expr)?;
+            rv::walk_expression(self, expr)?;
         }
 
         Ok(())
@@ -59,13 +60,13 @@ impl mv::MutVisitor for UsesLocalExtractor {
 fn simplify_temps(statements: &mut Vec<decomped::Statement>) -> anyhow::Result<()> {
     struct UsageCounter(HashMap<u16, usize>);
 
-    impl mv::MutVisitor for UsageCounter {
-        fn visit_expression(&mut self, expr: &mut decomped::Expression) -> anyhow::Result<()> {
+    impl rv::RefVisitor for UsageCounter {
+        fn visit_expression(&mut self, expr: &decomped::Expression) -> anyhow::Result<()> {
             if let decomped::Expression::LoadTemp { index } = expr {
                 *self.0.entry(*index).or_default() += 1;
             }
 
-            mv::walk_expression(self, expr)
+            rv::walk_expression(self, expr)
         }
     }
 
@@ -87,7 +88,7 @@ fn simplify_temps(statements: &mut Vec<decomped::Statement>) -> anyhow::Result<(
     }
 
     let mut usage_counts = UsageCounter(HashMap::new());
-    for stmt in statements.iter_mut() {
+    for stmt in statements.iter() {
         usage_counts.visit_statement(stmt)?;
     }
 
