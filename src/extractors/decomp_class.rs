@@ -122,6 +122,7 @@ struct TempSimplifier;
 
 impl TempSimplifier {
     fn simplify_block(&mut self, statements: &mut Vec<decomped::Statement>) -> anyhow::Result<()> {
+        SwitchExpressionRewriter.rewrite_block(statements)?;
         simplify_temps(statements)?;
         for stmt in statements {
             self.visit_statement(stmt)?;
@@ -197,6 +198,97 @@ fn pop_args(stack: &mut Vec<decomped::Expression>, count: usize) -> anyhow::Resu
 fn pop_stack(stack: &mut Vec<decomped::Expression>) -> anyhow::Result<decomped::Expression> {
     stack.pop().ok_or_else(|| anyhow!("Missing expression in stack"))
 }
+
+struct SwitchExpressionRewriter;
+
+impl SwitchExpressionRewriter {
+    fn body_to_expr(body: &[decomped::Statement], ret_idx: u16) -> Option<decomped::Expression> {
+        match body {
+            [decomped::Statement::StoreTemp { index, value }] if *index == ret_idx => Some(value.clone()),
+            [decomped::Statement::Expression { expr: decomped::Expression::Throw { value } }] => {
+                Some(decomped::Expression::Throw { value: Box::new(value.as_ref().clone()) })
+            }
+            [
+                decomped::Statement::StoreTemp { index, value: stored },
+                decomped::Statement::Expression { expr: decomped::Expression::Throw { value: thrown } },
+            ] => match thrown.as_ref() {
+                decomped::Expression::LoadTemp { index: load_idx } if *index == *load_idx => {
+                    Some(decomped::Expression::Throw { value: Box::new(stored.clone()) })
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn rewrite_block(&self, statements: &mut Vec<decomped::Statement>) -> anyhow::Result<()> {
+        let mut idx = 0;
+        while idx + 1 < statements.len() {
+            if let (
+                decomped::Statement::Switch { value, cases, default },
+                decomped::Statement::Return { value: Some((ret_kind, decomped::Expression::LoadTemp { index: ret_idx })) },
+            ) = (&statements[idx], &statements[idx + 1]) {
+                let mut cases_expr = Vec::new();
+                let mut default_expr = None;
+                let mut convertible = true;
+
+                for case in cases {
+                    if let Some(expr) = Self::body_to_expr(&case.body, *ret_idx) {
+                        cases_expr.push(decomped::SwitchExprCase { values: case.values.clone(), value: expr });
+                    } else {
+                        convertible = false;
+                        break;
+                    }
+                }
+
+                if convertible {
+                    if let Some(expr) = Self::body_to_expr(default, *ret_idx) {
+                        default_expr = Some(expr);
+                    } else {
+                        convertible = false;
+                    }
+                }
+
+                if convertible {
+                    cases_expr.sort_by_key(|c| c.values.first().copied().unwrap_or(i32::MAX));
+                    let new_return = decomped::Statement::Return {
+                        value: Some((
+                            ret_kind.clone(),
+                            decomped::Expression::Switch {
+                                value: Box::new(value.clone()),
+                                cases: cases_expr,
+                                default: Box::new(default_expr.unwrap()),
+                            },
+                        )),
+                    };
+                    statements[idx] = new_return;
+                    statements.remove(idx + 1);
+                    continue;
+                }
+            }
+
+            if let Some(branches) = match &mut statements[idx] {
+                decomped::Statement::If { then_branch, else_branch, .. } => Some(vec![then_branch, else_branch]),
+                decomped::Statement::While { body, .. } => Some(vec![body]),
+                decomped::Statement::Switch { cases, default, .. } => {
+                    let mut out = cases.iter_mut().map(|c| &mut c.body).collect::<Vec<_>>();
+                    out.push(default);
+                    Some(out)
+                }
+                _ => None,
+            } {
+                for branch in branches {
+                    self.rewrite_block(branch)?;
+                }
+            }
+
+            idx += 1;
+        }
+
+        Ok(())
+    }
+}
+
 
 fn decomp_block(
     code: &minijvm::Code,
@@ -522,8 +614,15 @@ fn decomp_block(
                 }
 
                 let base_stack = stack.clone();
-                let mut cases_out = Vec::new();
-                let mut default_body = Vec::new();
+                struct BranchData {
+                    values: Vec<i32>,
+                    is_default: bool,
+                    body: Vec<decomped::Statement>,
+                    result: Option<decomped::Expression>,
+                    exits: bool,
+                }
+
+                let mut branches_data = Vec::new();
 
                 for (idx, (start, values, is_default)) in branches.iter().enumerate() {
                     if *start >= code.instructions.len() {
@@ -550,15 +649,93 @@ fn decomp_block(
                     let mut branch_stack = base_stack.clone();
                     let body = decomp_block(code, &mut branch_pc, branch_end, &mut branch_stack, next_temp)?;
 
+                    let mut branch_result = None;
+                    if branch_stack.len() == base_stack.len() + 1 {
+                        branch_result = branch_stack.pop();
+                    }
                     if branch_stack.len() != base_stack.len() {
                         warn!(branch_start = *start, "Switch branch leaves inconsistent stack depth");
                     }
 
-                    if *is_default {
+                    let exits = matches!(body.last(), Some(
+                        decomped::Statement::Return { .. } |
+                        decomped::Statement::Expression { expr: decomped::Expression::Throw { .. } }
+                    ));
+
+                    branches_data.push(BranchData {
+                        values: values.clone(),
+                        is_default: *is_default,
+                        body,
+                        result: branch_result,
+                        exits,
+                    });
+                }
+
+                let continuing_branches: Vec<_> = branches_data.iter().filter(|b| !b.exits).collect();
+                let all_branches_yield = !continuing_branches.is_empty() && continuing_branches.iter().all(|b| b.result.is_some());
+                let branch_expr = |branch: &BranchData| -> Option<decomped::Expression> {
+                    if let Some(res) = &branch.result {
+                        if branch.body.is_empty() {
+                            return Some(res.clone());
+                        }
+                    }
+                    if branch.body.len() == 1 {
+                        if let decomped::Statement::Expression { expr: decomped::Expression::Throw { value } } = &branch.body[0] {
+                            return Some(decomped::Expression::Throw { value: Box::new(value.as_ref().clone()) });
+                        }
+                    }
+                    None
+                };
+                let switch_expr_possible = branches_data.iter().all(|b| branch_expr(b).is_some());
+                let mut cases_out = Vec::new();
+                let mut default_body = Vec::new();
+                let mut result_temp = None;
+
+                if switch_expr_possible {
+                    let mut cases_expr = Vec::new();
+                    let mut default_expr = None;
+                    for branch in &branches_data {
+                        let expr = branch_expr(branch).unwrap();
+                        if branch.is_default {
+                            default_expr = Some(expr);
+                        } else if !branch.values.is_empty() {
+                            let mut sorted_values = branch.values.clone();
+                            sorted_values.sort_unstable();
+                            cases_expr.push(decomped::SwitchExprCase { values: sorted_values, value: expr });
+                        }
+                    }
+                    cases_expr.sort_by_key(|c| c.values.first().copied().unwrap_or(i32::MAX));
+                    if let Some(default_expr) = default_expr {
+                        stack.push(decomped::Expression::Switch {
+                            value: Box::new(switch_value),
+                            cases: cases_expr,
+                            default: Box::new(default_expr),
+                        });
+                        *pc = switch_end;
+                        continue;
+                    }
+                }
+
+                if all_branches_yield && !branches_data.is_empty() {
+                    result_temp = Some(*next_temp);
+                    *next_temp += 1;
+                }
+
+                for branch in branches_data {
+                    let mut body = branch.body;
+                    if let Some(temp_idx) = result_temp {
+                        if !branch.exits {
+                            if let Some(value) = branch.result {
+                                body.push(decomped::Statement::StoreTemp { index: temp_idx, value });
+                            }
+                        }
+                    }
+
+                    if branch.is_default {
                         default_body = body.clone();
                     }
-                    if !values.is_empty() {
-                        let mut sorted_values = values.clone();
+                    if !branch.values.is_empty() {
+                        let mut sorted_values = branch.values.clone();
                         sorted_values.sort_unstable();
                         cases_out.push(decomped::SwitchCase { values: sorted_values, body });
                     }
@@ -566,13 +743,13 @@ fn decomp_block(
 
                 cases_out.sort_by_key(|c| c.values.first().copied().unwrap_or(i32::MAX));
 
-                statements.push(decomped::Statement::Switch {
-                    value: switch_value,
-                    cases: cases_out,
-                    default: default_body,
-                });
+                statements.push(decomped::Statement::Switch { value: switch_value, cases: cases_out, default: default_body });
 
-                *stack = base_stack;
+                if let Some(temp_idx) = result_temp {
+                    stack.push(decomped::Expression::LoadTemp { index: temp_idx });
+                } else {
+                    *stack = base_stack;
+                }
                 *pc = switch_end;
                 continue;
             }
@@ -585,7 +762,7 @@ fn decomp_block(
                 statements.push(decomped::Statement::Return { value });
             }
             Instr::Throw => {
-                statements.push(decomped::Statement::Throw { value: pop_stack(stack)? });
+                statements.push(decomped::Statement::Expression { expr: decomped::Expression::Throw { value: Box::new(pop_stack(stack)?) } });
             }
             Instr::New { class } => {
                 stack.push(decomped::Expression::New { class: class.clone(), args: Vec::new() });

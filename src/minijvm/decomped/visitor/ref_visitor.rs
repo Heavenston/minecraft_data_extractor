@@ -62,7 +62,6 @@ pub fn walk_statement<V: RefVisitor + ?Sized>(v: &mut V, stmt: &Statement) -> an
                 v.visit_expression(expr)?;
             }
         }
-        Statement::Throw { value } => v.visit_expression(value)?,
         Statement::StoreIntoArray { array, index, value, .. } => {
             v.visit_expression(array)?;
             v.visit_expression(index)?;
@@ -103,8 +102,7 @@ pub fn walk_expression<V: RefVisitor + ?Sized>(v: &mut V, expr: &Expression) -> 
     match expr {
         Expression::Constant { .. }
         | Expression::Load { .. }
-        | Expression::LoadTemp { .. }
-        | Expression::Lambda { .. } => {}
+        | Expression::LoadTemp { .. } => {}
 
         Expression::New { args, .. } => {
             for arg in args {
@@ -152,6 +150,19 @@ pub fn walk_expression<V: RefVisitor + ?Sized>(v: &mut V, expr: &Expression) -> 
             v.visit_expression(then_value)?;
             v.visit_expression(else_value)?;
         }
+        Expression::Lambda { captures, .. } => {
+            for c in captures {
+                v.visit_expression(c)?;
+            }
+        }
+        Expression::Switch { value, cases, default } => {
+            v.visit_expression(value)?;
+            for case in cases {
+                v.visit_expression(&case.value)?;
+            }
+            v.visit_expression(default)?;
+        }
+        Expression::Throw { value } => v.visit_expression(value)?,
     }
 
     Ok(())

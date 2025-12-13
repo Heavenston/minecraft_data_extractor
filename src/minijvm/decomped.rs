@@ -204,6 +204,15 @@ pub enum Expression {
         interface_method: Ident,
         captures: Vec<Expression>,
     },
+
+    Switch {
+        value: Box<Expression>,
+        cases: Vec<SwitchExprCase>,
+        default: Box<Expression>,
+    },
+    Throw {
+        value: Box<Expression>,
+    },
 }
 
 impl Expression {
@@ -306,6 +315,17 @@ impl Expression {
                     (100, format!("[{}]{}::{}", captures_str, target.class.descriptor, target.name.0))
                 }
             }
+            Expression::Switch { value, cases, default } => {
+                let mut s = format!("switch ({}) {{ ", value.printed(ctx));
+                for case in cases {
+                    let values = case.values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
+                    s.push_str(&format!("case {values} -> {}; ", case.value.printed(ctx)));
+                }
+                s.push_str(&format!("default -> {} ", default.printed(ctx)));
+                s.push('}');
+                (100, s)
+            }
+            Expression::Throw { value } => (5, format!("throw {}", value.printed_prec(ctx, 5))),
         }
     }
 }
@@ -314,6 +334,12 @@ impl Expression {
 pub struct SwitchCase {
     pub values: Vec<i32>,
     pub body: Vec<Statement>,
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub struct SwitchExprCase {
+    pub values: Vec<i32>,
+    pub value: Expression,
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
@@ -338,9 +364,6 @@ pub enum Statement {
     },
     Return {
         value: Option<(super::ValueKind, Expression)>,
-    },
-    Throw {
-        value: Expression,
     },
 
     StoreIntoArray {
@@ -403,7 +426,6 @@ impl Statement {
                 Some((_, expr)) => format!("{ind}return {};", expr.printed(ctx)),
                 None => format!("{ind}return;"),
             },
-            Statement::Throw { value } => format!("{ind}throw {};", value.printed(ctx)),
             Statement::StoreIntoArray { array, index, value, .. } => {
                 format!("{ind}{}[{}] = {};", array.printed(ctx), index.printed(ctx), value.printed(ctx))
             }
