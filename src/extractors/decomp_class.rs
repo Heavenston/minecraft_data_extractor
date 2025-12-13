@@ -1,4 +1,5 @@
-use crate::{mappings, minijvm::{self, decomped::{self, visitor::{Visitor, walk_expression}}}};
+use crate::{mappings, minijvm::{self, decomped::{self, visitor::mut_visitor as mv}}};
+use mv::MutVisitor;
 
 use std::collections::HashMap;
 use anyhow::anyhow;
@@ -7,7 +8,7 @@ use itertools::Itertools;
 
 struct LambdaExtractor;
 
-impl Visitor for LambdaExtractor {
+impl mv::MutVisitor for LambdaExtractor {
     fn visit_expression(&mut self, expr: &mut decomped::Expression) -> anyhow::Result<()> {
         if let decomped::Expression::InvokeDynamic { call_site, name, args, .. } = expr {
             if call_site.bootstrap.class.descriptor.to_string() == "java.lang.invoke.LambdaMetafactory" {
@@ -28,7 +29,7 @@ impl Visitor for LambdaExtractor {
             }
         }
 
-        walk_expression(self, expr)
+        mv::walk_expression(self, expr)
     }
 }
 
@@ -36,7 +37,7 @@ struct UsesLocalExtractor {
     pub uses_a_local: bool,
 }
 
-impl Visitor for UsesLocalExtractor {
+impl mv::MutVisitor for UsesLocalExtractor {
     fn visit_expression(&mut self, expr: &mut decomped::Expression) -> anyhow::Result<()> {
         let uses_a_local = match expr {
             decomped::Expression::Load { .. } |
@@ -48,7 +49,7 @@ impl Visitor for UsesLocalExtractor {
             self.uses_a_local = true;
         }
         else {
-            walk_expression(self, expr)?;
+            mv::walk_expression(self, expr)?;
         }
 
         Ok(())
@@ -58,13 +59,13 @@ impl Visitor for UsesLocalExtractor {
 fn simplify_temps(statements: &mut Vec<decomped::Statement>) -> anyhow::Result<()> {
     struct UsageCounter(HashMap<u16, usize>);
 
-    impl Visitor for UsageCounter {
+    impl mv::MutVisitor for UsageCounter {
         fn visit_expression(&mut self, expr: &mut decomped::Expression) -> anyhow::Result<()> {
             if let decomped::Expression::LoadTemp { index } = expr {
                 *self.0.entry(*index).or_default() += 1;
             }
 
-            walk_expression(self, expr)
+            mv::walk_expression(self, expr)
         }
     }
 
@@ -72,7 +73,7 @@ fn simplify_temps(statements: &mut Vec<decomped::Statement>) -> anyhow::Result<(
         values: HashMap<u16, decomped::Expression>,
     }
 
-    impl Visitor for TempInliner {
+    impl mv::MutVisitor for TempInliner {
         fn visit_expression(&mut self, expr: &mut decomped::Expression) -> anyhow::Result<()> {
             if let decomped::Expression::LoadTemp { index } = expr && let Some(value) = self.values.remove(index) {
                 *expr = value;
@@ -80,7 +81,7 @@ fn simplify_temps(statements: &mut Vec<decomped::Statement>) -> anyhow::Result<(
                 Ok(())
             }
             else {
-                walk_expression(self, expr)
+                mv::walk_expression(self, expr)
             }
         }
     }
@@ -128,7 +129,7 @@ impl TempSimplifier {
     }
 }
 
-impl Visitor for TempSimplifier {
+impl mv::MutVisitor for TempSimplifier {
     fn visit_method(&mut self, method: &mut decomped::Method) -> anyhow::Result<()> {
         self.simplify_block(&mut method.code)?;
         Ok(())

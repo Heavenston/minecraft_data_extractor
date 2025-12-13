@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail};
 use tracing::warn;
 
 use crate::extractors::decomp_class;
-use crate::minijvm::decomped::visitor::{ walk_expression, Visitor };
+use crate::minijvm::decomped::visitor::mut_visitor as mv;
 use crate::{ minijvm::{ self, decomped } };
 
 #[derive(Debug, Clone, bincode::Decode, bincode::Encode)]
@@ -35,9 +35,9 @@ struct AddPacketVisitor {
     packets: Vec<AddedPacket>,
 }
 
-impl Visitor for AddPacketVisitor {
+impl mv::MutVisitor for AddPacketVisitor {
     fn visit_expression(&mut self, expr: &mut decomped::Expression) -> anyhow::Result<()> {
-        walk_expression(self, expr)?;
+        mv::walk_expression(self, expr)?;
 
         match expr {
             decomped::Expression::Invoke { method, args, .. }
