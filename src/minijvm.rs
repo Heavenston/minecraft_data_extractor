@@ -177,6 +177,7 @@ pub struct Field {
     pub access_flags: AccessFlags,
     pub name: Ident,
     pub descriptor: TypeDescriptor,
+    pub constant_value: Option<Constant>,
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]

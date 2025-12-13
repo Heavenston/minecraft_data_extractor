@@ -127,7 +127,6 @@ impl ReadClassExtractor {
             })
         };
 
-
         let noak_this_class = pool!(noak_class.this_class())?;
         let noak_super_class = noak_class.super_class().map(|e| pool!(e)).transpose()?;
 
@@ -142,10 +141,21 @@ impl ReadClassExtractor {
         for field in noak_class.fields() {
             let _span = tracing::trace_span!("Reading a method");
             let field = try_or!(field; orelse continue);
+
+            let mut constant_value = None;
+            for attr in field.attributes() {
+                let attr = try_or!(attr; orelse continue);
+                let content = attr.read_content(noak_class.pool())?;
+                let noak::reader::AttributeContent::ConstantValue(cv) = content
+                else { continue };
+                constant_value = Some(constant_from_item(pool!(cv.value())?)?);
+            }
+
             out_class.fields.push(minijvm::Field {
                 access_flags: minijvm::AccessFlags::from(field.access_flags()),
                 name: minijvm::Ident::new(pool_str!(field.name())?),
                 descriptor: minijvm::TypeDescriptor::parse_complete(pool_str!(field.descriptor())?)?,
+                constant_value,
             });
         }
 
