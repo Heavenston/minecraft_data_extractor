@@ -220,7 +220,10 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
 
     let mut manager = extractors::ExtractionManager::new(state, &client_json).await?;
 
+    let mut special = false;
     if let Some(class_name) = &state.args.read_class {
+        special = true;
+
         let c = manager.extract(extractors::mapped_class::MappedClassExtractor {
             class: class_name.clone(),
             mappings_brand: mappings::Brand::Mojmaps,
@@ -228,6 +231,8 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
         println!("{c:#?}");
     }
     if let Some(class_name) = &state.args.decomp_class {
+        special = true;
+
         let c = manager.extract(extractors::decomp_class::DecompClassExtractor {
             class: class_name.clone(),
             mappings_brand: mappings::Brand::Mojmaps,
@@ -235,8 +240,10 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
         println!("{}", c.printed());
     }
 
-    let c = manager.extract(extractors::packets::PacketsExtractor).await?;
-    println!("{c:#?}");
+    if !special {
+        let c = manager.extract(extractors::packets::PacketsExtractor).await?;
+        println!("{c:#?}");
+    }
 
     manager.finish().await?;
     
