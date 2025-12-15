@@ -337,15 +337,19 @@ fn decomp_block(
                 let then_start = *pc + 1;
 
                 let then_goto = (then_start..target)
-                    .filter(|&i| matches!(code.instructions[i], Instr::Goto { cond: None, .. }))
-                    .last()
-                    .and_then(|i| {
+                    .filter_map(|i| {
                         if let Instr::Goto { offset, cond: None } = &code.instructions[i] {
-                            Some((i, *offset as usize))
+                            let dest = *offset as usize;
+                            if dest >= target {
+                                Some((i, dest))
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
-                    });
+                    })
+                    .last();
 
                 if let Some((then_goto_idx, end_idx)) = then_goto {
                     let mut then_pc = then_start;
