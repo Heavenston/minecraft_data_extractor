@@ -7,6 +7,36 @@ use itertools::Itertools;
 use rc_zip_sync::ReadZip as _;
 use tracing::warn;
 
+#[ouroboros::self_referencing]
+struct OwnedZipFile {
+    file: std::fs::File,
+    #[borrows(file)]
+    #[not_covariant]
+    zip_file: rc_zip_sync::ArchiveHandle<'this, std::fs::File>,
+}
+
+/// Used to cache and share the rc_zip_sync::Archive of the jar file of each version
+#[derive(Debug, bincode::Encode)]
+struct ServerJarZipFileExtractor;
+
+impl super::ExtractorKind for ServerJarZipFileExtractor {
+    type Output = OwnedZipFile;
+
+    fn name(&self) -> &'static str {
+        "server_jar_zip_file_extractor"
+    }
+
+    async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
+        let server_jar_path = manager.extract(super::server_jar::ServerJarExtractor).await?;
+        tokio::task::spawn_blocking(move || {
+            Ok(OwnedZipFileTryBuilder {
+                file: std::fs::File::open(&*server_jar_path)?,
+                zip_file_builder: |server_jar_file| server_jar_file.read_zip(),
+            }.try_build()?)
+        }).await?
+    }
+}
+
 #[derive(Debug, bincode::Encode)]
 /// Not called ParseClass because parsing is done by `noak`... so idk didn't feel
 /// right
@@ -17,14 +47,10 @@ pub struct ReadClassExtractor {
 }
 
 impl ReadClassExtractor {
-    fn read_class(server_jar_path: &Path, class: &str) -> anyhow::Result<minijvm::Class> {
+    fn read_class(zip_file: &rc_zip_sync::ArchiveHandle<'_, std::fs::File>, class: &str) -> anyhow::Result<minijvm::Class> {
         use noak::reader::cpool as cpool;
         use noak::reader::attributes::{ RawInstruction as RI, Index as CodeIndex, ArrayType as AT };
         use minijvm::{ GotoCondition, IfOperand, IfCmp, BinOp, UnOp, Instruction as MiniInstr, SwitchCaseTarget, ValueKind as VK, ConstantValue as CV };
-
-        let _span = tracing::trace_span!("Reading class", ?server_jar_path, class);
-        let server_jar_file = std::fs::File::open(&*server_jar_path)?;
-        let zip_file = server_jar_file.read_zip()?;
 
         let class_path = class.replace(".", "/") + ".class";
 
@@ -662,7 +688,9 @@ impl super::ExtractorKind for ReadClassExtractor {
     }
 
     async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
-        let server_jar_path = manager.extract(super::server_jar::ServerJarExtractor).await?;
-        crate::spawn_cpu_bound(move || Self::read_class(&server_jar_path, &self.class)).await?
+        let zip_file = manager.extract(ServerJarZipFileExtractor).await?;
+        crate::spawn_cpu_bound(move || {
+            zip_file.with_zip_file(|zip_file| Self::read_class(&zip_file, &self.class))
+        }).await?
     }
 }
