@@ -6,12 +6,14 @@ use rc_zip_sync::ReadZip as _;
 use crate::version_json::VersionJson;
 
 // The first version to bundle a version.json was '18w47b' which release on '2018-11-23T10:46:41+00:00'
+#[expect(dead_code)]
 static VERSION_JSON_FIRST_RELEASE_TIME: LazyLock<chrono::DateTime<chrono::Utc>> = LazyLock::new(|| {
     chrono::DateTime::parse_from_rfc3339("2018-11-23T10:46:41+00:00").unwrap()
         .to_utc()
 });
 
 #[derive(Debug, Clone, Copy, Default, bincode::Encode)]
+#[expect(dead_code)]
 pub struct VersionJsonExtractor;
 impl super::ExtractorKind for VersionJsonExtractor {
     type Output = VersionJson;

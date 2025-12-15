@@ -432,6 +432,10 @@ pub enum Instruction {
         value_kind: ValueKind,
     },
 
+    InstanceOf {
+        class: ClassRef,
+    },
+
     Invoke {
         kind: InvokeKind,
         method: MethodRef,

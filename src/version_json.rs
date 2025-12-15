@@ -1,5 +1,6 @@
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, bincode::Encode, bincode::Decode)]
+#[expect(dead_code)]
 pub struct VersionJson {
     pub id: String,
     pub name: String,

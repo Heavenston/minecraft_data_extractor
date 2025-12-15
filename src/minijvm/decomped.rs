@@ -134,6 +134,12 @@ pub enum Expression {
         value_kind: super::ValueKind,
         operand: Box<Expression>,
     },
+
+    InstanceOf {
+        class: super::ClassRef,
+        object: Box<Expression>,
+    },
+    
     Invoke {
         kind: super::InvokeKind,
         method: super::MethodRef,
@@ -241,6 +247,9 @@ impl Expression {
             Expression::UnOp { op, operand, .. } => {
                 let op_str = op.printed();
                 (90, format!("{op_str}{}", operand.printed_prec(ctx, 90)))
+            }
+            Expression::InstanceOf { class, object } => {
+                (0, format!("{} instanceof {}", object.printed(ctx), class.descriptor))
             }
             Expression::Invoke { kind, method, object, args } => {
                 let args_str = args.iter().map(|a| a.printed(ctx)).collect::<Vec<_>>().join(", ");
@@ -397,6 +406,7 @@ pub enum Statement {
 }
 
 impl Statement {
+    #[expect(dead_code)]
     pub fn printed(&self, ctx: &MethodPrintContext) -> String {
         self.printed_indent(ctx, 0)
     }

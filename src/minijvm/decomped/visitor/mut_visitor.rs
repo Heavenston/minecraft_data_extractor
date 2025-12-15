@@ -115,6 +115,7 @@ pub fn walk_expression<V: MutVisitor + ?Sized>(v: &mut V, expr: &mut Expression)
             v.visit_expression(rhs)?;
         }
         Expression::UnOp { operand, .. } => v.visit_expression(operand)?,
+        Expression::InstanceOf { object, .. } => v.visit_expression(object)?,
         Expression::Invoke { object, args, .. } => {
             if let Some(obj) = object {
                 v.visit_expression(obj)?;

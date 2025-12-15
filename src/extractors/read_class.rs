@@ -1,6 +1,6 @@
 use crate::minijvm;
 
-use std::{ collections::HashMap, io::Read, path::Path };
+use std::{ collections::HashMap, io::Read };
 
 use anyhow::{ anyhow, bail, Context };
 use itertools::Itertools;
@@ -496,17 +496,17 @@ impl ReadClassExtractor {
                         };
                         instructions.push(MiniInstr::Goto     { offset: target_idx as i32, cond: Some(GotoCondition { operand: IfOperand::Null, cmp: IfCmp::Eq }) });
                     },
-                    RI::IInc { index, value }   => instructions.push(MiniInstr::IncInt   { index: index.into(), value: value.into() }),
-                    RI::IIncW { index, value }  => instructions.push(MiniInstr::IncInt   { index: index.into(), value: value.into() }),
-                    RI::ILoad { index }         => instructions.push(MiniInstr::Load     { kind: VK::Int, index: index.into() }),
-                    RI::ILoadW { index }        => instructions.push(MiniInstr::Load     { kind: VK::Int, index: index.into() }),
-                    RI::ILoad0                  => instructions.push(MiniInstr::Load     { kind: VK::Int, index: 0 }),
-                    RI::ILoad1                  => instructions.push(MiniInstr::Load     { kind: VK::Int, index: 1 }),
-                    RI::ILoad2                  => instructions.push(MiniInstr::Load     { kind: VK::Int, index: 2 }),
-                    RI::ILoad3                  => instructions.push(MiniInstr::Load     { kind: VK::Int, index: 3 }),
-                    RI::IMul                    => instructions.push(MiniInstr::BinOp    { op: BinOp::Mul, value_kind: VK::Int }),
-                    RI::INeg                    => instructions.push(MiniInstr::UnOp     { op: UnOp::Neg, value_kind: VK::Int }),
-                    RI::InstanceOf { .. }       => unknown!(),
+                    RI::IInc { index, value }   => instructions.push(MiniInstr::IncInt     { index: index.into(), value: value.into() }),
+                    RI::IIncW { index, value }  => instructions.push(MiniInstr::IncInt     { index: index.into(), value: value.into() }),
+                    RI::ILoad { index }         => instructions.push(MiniInstr::Load       { kind: VK::Int, index: index.into() }),
+                    RI::ILoadW { index }        => instructions.push(MiniInstr::Load       { kind: VK::Int, index: index.into() }),
+                    RI::ILoad0                  => instructions.push(MiniInstr::Load       { kind: VK::Int, index: 0 }),
+                    RI::ILoad1                  => instructions.push(MiniInstr::Load       { kind: VK::Int, index: 1 }),
+                    RI::ILoad2                  => instructions.push(MiniInstr::Load       { kind: VK::Int, index: 2 }),
+                    RI::ILoad3                  => instructions.push(MiniInstr::Load       { kind: VK::Int, index: 3 }),
+                    RI::IMul                    => instructions.push(MiniInstr::BinOp      { op: BinOp::Mul, value_kind: VK::Int }),
+                    RI::INeg                    => instructions.push(MiniInstr::UnOp       { op: UnOp::Neg, value_kind: VK::Int }),
+                    RI::InstanceOf { index }    => instructions.push(MiniInstr::InstanceOf { class: make_class_ref(pool!(index)?)?, }),
                     RI::InvokeDynamic { index } => {
                         let invoke_dyn = pool!(index)?;
                         let name_and_type = pool!(invoke_dyn.name_and_type)?;

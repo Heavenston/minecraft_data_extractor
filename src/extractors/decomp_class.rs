@@ -494,6 +494,12 @@ fn decomp_block(
                 let operand = Box::new(pop_stack(stack)?);
                 stack.push(decomped::Expression::UnOp { op: op.clone(), value_kind: value_kind.clone(), operand });
             }
+            Instr::InstanceOf { class } => {
+                let object = Box::new(pop_stack(stack)?);
+                stack.push(decomped::Expression::InstanceOf {
+                    class: class.clone(), object,
+                });
+            },
             Instr::Invoke { kind, method } => {
                 let args = pop_args(stack, method.descriptor.args.len())?;
 

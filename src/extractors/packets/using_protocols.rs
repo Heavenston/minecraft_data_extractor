@@ -13,6 +13,7 @@ use super::{ Packet, Packets, PacketDirection, ProtocolState, DataType };
 #[derive(Debug)]
 struct AddedPacket {
     packet_class_name: minijvm::ClassRef,
+    #[expect(dead_code)]
     packet_type_field: minijvm::FieldRef,
 }
 
@@ -130,10 +131,10 @@ async fn extract_packet(manager: &mut extractors::ExtractionManager<'_>, packet_
     let Some(packet_class_name) = packet_class.descriptor.simple_class_name()
     else { bail!("Could not get a simple packet class name") };
 
-    let decomped_packet_class = manager.extract(decomp_class::DecompClassExtractor {
-        class: packet_class_name.to_string(),
-        mappings_brand: crate::mappings::Brand::Mojmaps,
-    }).await?;
+    // let decomped_packet_class = manager.extract(decomp_class::DecompClassExtractor {
+    //     class: packet_class_name.to_string(),
+    //     mappings_brand: crate::mappings::Brand::Mojmaps,
+    // }).await?;
 
     let packet_class_data_type = read_java_data_type(manager, &packet_class.descriptor).await?;
     let DataType::Record(packet_class_record_type) = &*packet_class_data_type
