@@ -155,11 +155,11 @@ impl MappedClassExtractor {
                         access_flags: method.access_flags.clone(),
                         name,
                         descriptor,
-                        code: minijvm::Code {
-                            instructions: method.code.instructions.iter()
+                        code: method.code.as_ref().map(|code| minijvm::Code {
+                            instructions: code.instructions.iter()
                                 .map(|instr| Self::map_instruction(mappings, class_map, instr))
                                 .collect(),
-                        },
+                        }),
                     }
                 })
                 .collect(),

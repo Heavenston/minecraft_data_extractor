@@ -133,7 +133,7 @@ impl TempSimplifier {
 
 impl mv::MutVisitor for TempSimplifier {
     fn visit_method(&mut self, method: &mut decomped::Method) -> anyhow::Result<()> {
-        self.simplify_block(&mut method.code)?;
+        method.code.as_mut().map(|b| self.simplify_block(b)).transpose()?;
         Ok(())
     }
 
@@ -809,7 +809,7 @@ impl DecompClassExtractor {
                     name: method.name.clone(),
                     descriptor: method.descriptor.clone(),
                     access_flags: method.access_flags.clone(),
-                    code: Self::decomp_code(&method.code)?,
+                    code: method.code.as_ref().map(Self::decomp_code).transpose()?,
                 })
             }).try_collect()?,
             fields: class.fields.iter().map(|field| decomped::Field {
@@ -867,7 +867,7 @@ impl DecompClassExtractor {
             if m.name.0 != "<clinit>" && m.name.0 != "<init>" {
                 return true;
             }
-            !Self::is_empty_initializer(&m.code)
+            !m.code.as_deref().is_none_or(Self::is_empty_initializer)
         });
 
         Ok(())
@@ -878,9 +878,12 @@ impl DecompClassExtractor {
             return Ok(());
         };
 
+        let Some(code) = &mut method.code
+        else { return Ok(()); };
+
         let mut to_remove = Vec::new();
 
-        for (idx, stmt) in method.code.iter_mut().enumerate() {
+        for (idx, stmt) in code.iter_mut().enumerate() {
             let decomped::Statement::PutField {
                 is_static: field_is_static,
                 field,
@@ -925,7 +928,7 @@ impl DecompClassExtractor {
         }
 
         for idx in to_remove.into_iter().rev() {
-            method.code.remove(idx);
+            code.remove(idx);
         }
 
         Ok(())
@@ -958,10 +961,6 @@ impl DecompClassExtractor {
 
 impl super::ExtractorKind for DecompClassExtractor {
     type Output = decomped::Class;
-
-    fn output_encoder_decoder(&self) -> Option<impl super::EncoderDecoder<Self::Output> + 'static> {
-        Some(super::BincodeEncoderDecoder)
-    }
 
     fn name(&self) -> &'static str {
         "decomp_class_extractor"

@@ -485,7 +485,7 @@ pub struct Method {
     pub access_flags: AccessFlags,
     pub name: Ident,
     pub descriptor: MethodDescriptor,
-    pub code: Code,
+    pub code: Option<Code>,
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]

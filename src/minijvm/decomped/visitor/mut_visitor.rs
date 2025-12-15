@@ -33,7 +33,7 @@ pub fn walk_class<V: MutVisitor + ?Sized>(v: &mut V, class: &mut Class) -> anyho
 }
 
 pub fn walk_method<V: MutVisitor + ?Sized>(v: &mut V, method: &mut Method) -> anyhow::Result<()> {
-    for stmt in &mut method.code {
+    for stmt in method.code.iter_mut().flatten() {
         v.visit_statement(stmt)?;
     }
     Ok(())

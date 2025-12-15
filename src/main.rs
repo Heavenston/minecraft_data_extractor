@@ -252,13 +252,7 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .event_format(
-            tracing_subscriber::fmt::format()
-                .with_file(true)
-                .with_line_number(true)
-        )
-        .init();
+    tracing_subscriber::fmt::init();
     let args = Args::parse();
     let state = AppState {
         args,

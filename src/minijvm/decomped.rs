@@ -500,7 +500,7 @@ pub struct Method {
     pub name: Ident,
     pub descriptor: MethodDescriptor,
     pub access_flags: AccessFlags,
-    pub code: Vec<Statement>,
+    pub code: Option<Vec<Statement>>,
 }
 
 impl Method {
@@ -517,14 +517,21 @@ impl Method {
 
         let mut s = match self.name.0.as_str() {
             "<clinit>" => "static {\n".to_string(),
-            "<init>" => format!("{modifiers}{class_name}({args}) {{\n"),
-            _ => format!("{modifiers}{} {}({args}) {{\n", self.descriptor.return_type, self.name.0),
+            "<init>" => format!("{modifiers}{class_name}({args})"),
+            _ => format!("{modifiers}{} {}({args})", self.descriptor.return_type, self.name.0),
         };
 
-        for stmt in &self.code {
-            let _ = writeln!(s, "{}", stmt.printed_indent(&ctx, 1));
+        if let Some(code) = &self.code {
+            let _ = write!(s, " {{\n");
+            for stmt in code {
+                let _ = writeln!(s, "{}", stmt.printed_indent(&ctx, 1));
+            }
+            s.push('}');
         }
-        s.push('}');
+        else {
+            let _ = write!(s, ";\n");
+        }
+
         s
     }
 }

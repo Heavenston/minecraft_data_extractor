@@ -663,12 +663,11 @@ impl ReadClassExtractor {
             }
 
             let name = minijvm::Ident::new(pool_str!(method.name())?);
-            let code = found_code.ok_or_else(|| anyhow!("Could not find code attribute for method {name}"))?;
             out_class.methods.push(minijvm::Method {
                 access_flags: minijvm::AccessFlags::from(method.access_flags()),
                 name,
                 descriptor: minijvm::MethodDescriptor::parse_complete(pool_str!(method.descriptor())?)?,
-                code,
+                code: found_code,
             });
         }
 
@@ -678,10 +677,6 @@ impl ReadClassExtractor {
 
 impl super::ExtractorKind for ReadClassExtractor {
     type Output = minijvm::Class;
-
-    fn output_encoder_decoder(&self) -> Option<impl super::EncoderDecoder<Self::Output> + 'static> {
-        Some(super::BincodeEncoderDecoder)
-    }
     
     fn name(&self) -> &'static str {
         "read_class_extractor"

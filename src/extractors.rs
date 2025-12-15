@@ -42,7 +42,7 @@ impl<T> EncoderDecoder<T> for DummyEncoderDecoder {
     }
 }
 
-pub trait ExtractorKind: Any + bincode::Encode {
+pub trait ExtractorKind: Any + std::fmt::Debug + bincode::Encode {
     type Output: ExtractorOutput;
 
     // If None is returned, the output will not be cached
@@ -65,7 +65,7 @@ mod manager {
     use anyhow::bail;
     use sha2::Digest;
     use tokio::fs;
-    use tracing::{ trace, warn };
+    use tracing::{ trace, trace_span, warn, Instrument };
 
     use crate::{ version_client_json::VersionClientJson, AppState };
     use super::*;
@@ -226,8 +226,12 @@ mod manager {
             let output = if let Some(cached_extraction) = cached_extraction {
                 cached_extraction
             } else {
-                trace!(extractor = extractor_name, version_id = self.version.id, "Running extractor");
-                Arc::new(extractor.extract(self).await?)
+                let span = trace_span!("Running extractor", extractor_name, ?extractor, version_id = self.version.id);
+                let simple_span = trace_span!("Running extractor", extractor_name, version_id = self.version.id);
+                span.clone().in_scope(|| trace!("Started extractor"));
+                let output = Arc::new(extractor.extract(self).instrument(simple_span).await?);
+                span.in_scope(|| trace!("Finished running extractor"));
+                output
             };
 
             self.extractions.insert((extractor_name, extractor_hash), Some(ExtractionEntry {

@@ -60,7 +60,7 @@ async fn read_java_data_type(manager: &mut extractors::ExtractionManager<'_>, de
     }
 }
 
-#[derive(bincode::Encode)]
+#[derive(Debug, bincode::Encode)]
 struct JavaDataTypeExtractor {
     descriptor: minijvm::TypeDescriptor,
 }
