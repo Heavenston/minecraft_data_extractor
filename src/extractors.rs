@@ -9,24 +9,45 @@ pub mod packets;
 
 use std::any::Any;
 
-pub trait ExtractorOutput: Any + bincode::Decode<()> + bincode::Encode + Send + Sync
+pub trait ExtractorOutput: Any + Send + Sync
 { }
 
-impl<T: Any + bincode::Decode<()> + bincode::Encode + Send + Sync> ExtractorOutput for T
+impl<T: Any + Send + Sync> ExtractorOutput for T
 { }
 
-#[derive(Debug, Clone)]
-pub struct ExtractorConfig {
-    pub store_output_in_cache: bool,
+pub trait EncoderDecoder<T> {
+    fn encode(&self, val: &T) -> anyhow::Result<Box<[u8]>>;
+    fn decode(&self, data: &[u8]) -> anyhow::Result<T>;
+}
+
+pub struct BincodeEncoderDecoder;
+impl<T: bincode::Decode<()> + bincode::Encode> EncoderDecoder<T> for BincodeEncoderDecoder {
+    fn encode(&self, val: &T) -> anyhow::Result<Box<[u8]>> {
+        Ok(bincode::encode_to_vec(val, bincode::config::standard())?.into_boxed_slice())
+    }
+
+    fn decode(&self, data: &[u8]) -> anyhow::Result<T> {
+        Ok(bincode::decode_from_slice(data, bincode::config::standard())?.0)
+    }
+}
+
+pub struct DummyEncoderDecoder;
+impl<T> EncoderDecoder<T> for DummyEncoderDecoder {
+    fn encode(&self, _val: &T) -> anyhow::Result<Box<[u8]>> {
+        bail!("unimplemented")
+    }
+
+    fn decode(&self, _data: &[u8]) -> anyhow::Result<T> {
+        bail!("unimplemented")
+    }
 }
 
 pub trait ExtractorKind: Any + bincode::Encode {
     type Output: ExtractorOutput;
 
-    fn config(&self) -> ExtractorConfig {
-        ExtractorConfig {
-            store_output_in_cache: true,
-        }
+    // If None is returned, the output will not be cached
+    fn output_encoder_decoder(&self) -> Option<impl EncoderDecoder<Self::Output> + 'static> {
+        None::<DummyEncoderDecoder>
     }
 
     /// Unique name for this extractor kind, used for serialization so should
@@ -176,8 +197,7 @@ mod manager {
                 },
             }
 
-            let cfg = extractor.config();
-            if cfg.store_output_in_cache && let Some(extracted_value) = self.extractions.get(&(extractor_name, extractor_hash)) {
+            if let Some(extracted_value) = self.extractions.get(&(extractor_name, extractor_hash)) {
                 match extracted_value {
                     Some(ExtractionEntry { encoded: _, value }) =>
                         return Ok(Arc::downcast(Arc::clone(value)).expect("Should be the correct type")),
@@ -192,10 +212,11 @@ mod manager {
             // is callled recursively, making an infinite loop
             self.extractions.insert((extractor_name, extractor_hash), None);
 
-            let cached_extraction = self.cache.as_ref()
-                .and_then(|cache| cache.extractions.get(&(extractor_name.to_string(), extractor_hash)))
-                .and_then(|extraction_data| match bincode::decode_from_slice::<K::Output, _>(&extraction_data, Self::bincode_config()) {
-                    Ok((output, _)) => Some(Arc::new(output)),
+            let output_encoder_decoder = extractor.output_encoder_decoder();
+            let cached_extraction = self.cache.as_ref().zip(output_encoder_decoder.as_ref())
+                .and_then(|(cache, ocd)| cache.extractions.get(&(extractor_name.to_string(), extractor_hash)).zip(Some(ocd)))
+                .and_then(|(extraction_data, ocd)| match ocd.decode(&extraction_data) {
+                    Ok(output) => Some(Arc::new(output)),
                     Err(error) => {
                         warn!(%error, version_id = self.version.id, extractor = extractor_name, extractor_type_name = std::any::type_name::<K>(), "Error decoding extractor cached output");
                         None
@@ -210,10 +231,9 @@ mod manager {
             };
 
             self.extractions.insert((extractor_name, extractor_hash), Some(ExtractionEntry {
-                encoded: cfg.store_output_in_cache
-                    .then(|| bincode::encode_to_vec(&*output, Self::bincode_config()))
-                    .transpose()?
-                    .map(Vec::into_boxed_slice),
+                encoded: output_encoder_decoder.as_ref()
+                    .map(|encoder_decoder| encoder_decoder.encode(&*output))
+                    .transpose()?,
                 value: Arc::clone(&output) as Arc<dyn Any + Send + Sync>,
             }));
 
@@ -221,4 +241,5 @@ mod manager {
         }
     }
 }
+use anyhow::bail;
 pub use manager::*;

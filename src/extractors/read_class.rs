@@ -652,6 +652,10 @@ impl ReadClassExtractor {
 
 impl super::ExtractorKind for ReadClassExtractor {
     type Output = minijvm::Class;
+
+    fn output_encoder_decoder(&self) -> Option<impl super::EncoderDecoder<Self::Output> + 'static> {
+        Some(super::BincodeEncoderDecoder)
+    }
     
     fn name(&self) -> &'static str {
         "read_class_extractor"

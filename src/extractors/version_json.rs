@@ -16,6 +16,10 @@ pub struct VersionJsonExtractor;
 impl super::ExtractorKind for VersionJsonExtractor {
     type Output = VersionJson;
 
+    fn output_encoder_decoder(&self) -> Option<impl super::EncoderDecoder<Self::Output> + 'static> {
+        Some(super::BincodeEncoderDecoder)
+    }
+
     fn name(&self) -> &'static str {
         "version_json_extractor"
     }

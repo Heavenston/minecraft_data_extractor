@@ -61,6 +61,10 @@ pub struct PacketsExtractor;
 impl super::ExtractorKind for PacketsExtractor {
     type Output = Packets;
 
+    fn output_encoder_decoder(&self) -> Option<impl super::EncoderDecoder<Self::Output> + 'static> {
+        Some(super::BincodeEncoderDecoder)
+    }
+
     fn name(&self) -> &'static str {
         "packets_extractor"
     }

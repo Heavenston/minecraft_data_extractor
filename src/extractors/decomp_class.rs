@@ -959,6 +959,10 @@ impl DecompClassExtractor {
 impl super::ExtractorKind for DecompClassExtractor {
     type Output = decomped::Class;
 
+    fn output_encoder_decoder(&self) -> Option<impl super::EncoderDecoder<Self::Output> + 'static> {
+        Some(super::BincodeEncoderDecoder)
+    }
+
     fn name(&self) -> &'static str {
         "decomp_class_extractor"
     }

@@ -119,12 +119,6 @@ fn parse_mojmap(mappings: &str) -> Result<mappings::Mappings, nom::Err<nom::erro
 pub struct MojangMappingsExtractor;
 impl super::ExtractorKind for MojangMappingsExtractor {
     type Output = mappings::Mappings;
-
-    fn config(&self) -> super::ExtractorConfig {
-        // It is not faster to deserialized the parsed mappings then to
-        // parse the txt file again (probably because of the size and that the parsing is copy-intensive)
-        super::ExtractorConfig { store_output_in_cache: false }
-    }
     
     fn name(&self) -> &'static str {
         "mojang_mappings_extractor"
