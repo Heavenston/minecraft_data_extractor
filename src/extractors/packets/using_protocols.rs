@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::bail;
 use tracing::{ warn, error };
@@ -46,6 +47,16 @@ impl rv::RefVisitor for AddPacketVisitor {
         }
 
         Ok(())
+    }
+}
+
+async fn read_java_data_type(manager: &mut extractors::ExtractionManager<'_>, descriptor: &minijvm::TypeDescriptor) -> anyhow::Result<Arc<DataType>> {
+    match Box::pin(manager.extract(JavaDataTypeExtractor { descriptor: descriptor.clone() })).await {
+        Ok(dt) => Ok(dt),
+        Err(error) => {
+            error!(?descriptor, %error, "Error while extracting java data type");
+            return Ok(Arc::new(DataType::Error { name: format!("{descriptor:?}") }));
+        },
     }
 }
 
@@ -103,7 +114,7 @@ impl extractors::ExtractorKind for JavaDataTypeExtractor {
 
             for field in &decomped_class.fields {
                 if field.access_flags.static_ { continue; }
-                let ty = Box::pin(manager.extract(Self { descriptor: field.descriptor.clone() })).await?;
+                let ty = read_java_data_type(manager, &field.descriptor).await?;
                 fields.insert(field.name.to_string(), (*ty).clone());
             }
 
@@ -124,7 +135,7 @@ async fn extract_packet(manager: &mut extractors::ExtractionManager<'_>, packet_
         mappings_brand: crate::mappings::Brand::Mojmaps,
     }).await?;
 
-    let packet_class_data_type = manager.extract(JavaDataTypeExtractor { descriptor: packet_class.descriptor.clone() }).await?;
+    let packet_class_data_type = read_java_data_type(manager, &packet_class.descriptor).await?;
     let DataType::Record(packet_class_record_type) = &*packet_class_data_type
     else { bail!("Expected packet class to be a record but got: {packet_class_data_type:?}") };
 
@@ -152,7 +163,6 @@ pub(super) async fn extract_using_protocols(manager: &mut extractors::Extraction
     let mut states = Vec::new();
 
     for protocol in &protocols {
-        println!("\n{}:", protocol.name);
         let templates = [
             (PacketDirection::Serverbound, protocol.fields.iter().find(|l| l.access_flags.static_ && l.name.0 == "SERVERBOUND_TEMPLATE")),
             (PacketDirection::Clientbound, protocol.fields.iter().find(|l| l.access_flags.static_ && l.name.0 == "CLIENTBOUND_TEMPLATE")),

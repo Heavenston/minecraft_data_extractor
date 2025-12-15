@@ -35,6 +35,7 @@ pub enum DataType {
     Enum(EnumType),
     Array(Box<DataType>),
     Other,
+    Error { name: String },
 }
 
 #[derive(Debug, Clone, bincode::Decode, bincode::Encode)]
