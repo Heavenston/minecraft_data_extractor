@@ -1,7 +1,7 @@
 pub mod visitor;
 use super::{ Ident, IdentPath, TypeDescriptor, TypeDescriptorKind, MethodDescriptor, AccessFlags };
 
-use std::{borrow::Cow, fmt::Write, ops::Deref, sync::Arc};
+use std::{ borrow::Cow, fmt::Write, ops::Deref };
 use convert_case::ccase;
 
 pub struct ClassPrintContext<'a> {
