@@ -90,9 +90,9 @@ impl VersionTypeFilter {
 #[command(about = get_about(false), long_about = get_about(true))]
 /// Extract data from minecraft jars
 pub(crate) struct Args {
-    /// Directory where all data should be downloaded
-    #[arg(long, short, default_value = "mc_data")]
-    output: PathBuf,
+    /// Directory where all cache should be stored
+    #[arg(long, short, default_value = "mc_data_cache")]
+    cache_output: PathBuf,
     /// If specified, only download and extract the data for the given version(s)
     /// Can be given multiple times
     #[arg(short, long)]
@@ -122,13 +122,13 @@ pub(crate) struct AppState {
 
 impl AppState {
     pub fn version_folder(&self, version_id: &str) -> PathBuf {
-        self.args.output.join(&version_id)
+        self.args.cache_output.join(&version_id)
     }
 }
 
 async fn get_updated_manifest_file(state: &AppState) -> anyhow::Result<VersionManifestV2> {
-    let manifest_etag_file_path = state.args.output.join("version_manifestv2.etag");
-    let manifest_json_file_path = state.args.output.join("version_manifestv2.json");
+    let manifest_etag_file_path = state.args.cache_output.join("version_manifestv2.etag");
+    let manifest_json_file_path = state.args.cache_output.join("version_manifestv2.json");
 
     let manifest_etag = match fs::read_to_string(&manifest_etag_file_path).await {
         Ok(etag) => {
@@ -259,7 +259,7 @@ async fn main() -> anyhow::Result<()> {
         client: reqwest::Client::new(),
     };
 
-    fs::create_dir_all(&state.args.output).await?;
+    fs::create_dir_all(&state.args.cache_output).await?;
     let manifest = get_updated_manifest_file(&state).await?;
     info!(latest_release = manifest.latest.release, latest_snapshot = manifest.latest.snapshot, "Manifest loaded");
 
