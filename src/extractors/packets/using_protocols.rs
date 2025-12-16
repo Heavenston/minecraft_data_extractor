@@ -73,6 +73,7 @@ impl extractors::ExtractorKind for JavaDataTypeExtractor {
         "java_data_type_extractor"
     }
 
+    #[tracing::instrument(name = "extract_java_data_type", skip(manager), fields(version_id = manager.version().id))]
     async fn extract(mut self, manager: &mut extractors::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
         if self.descriptor.array_depth > 0 {
             self.descriptor.array_depth -= 1;
@@ -146,10 +147,13 @@ async fn extract_packet(manager: &mut extractors::ExtractionManager<'_>, packet_
     })
 }
 
+#[tracing::instrument(skip_all)]
 pub(super) async fn extract_using_protocols(manager: &mut extractors::ExtractionManager<'_>) -> anyhow::Result<Packets> {
     let protocols_names = vec![
-        "net.minecraft.network.protocol.handshake.HandshakeProtocols",
-        "net.minecraft.network.protocol.login.LoginProtocols",
+        "net.minecraft.network.protocol.status.StatusProtocols",
+        // "net.minecraft.network.protocol.handshake.HandshakeProtocols",
+        // "net.minecraft.network.protocol.login.LoginProtocols",
+        // "net.minecraft.network.protocol.game.GameProtocols",
     ];
     let mut protocols = Vec::new();
     for class_name in protocols_names {

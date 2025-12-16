@@ -25,6 +25,7 @@ impl MappingsExt for mappings::Mappings {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     fn map_method_ref(&self, method_ref: &minijvm::MethodRef) -> minijvm::MethodRef {
         let Some(class_name) = method_ref.class.descriptor.simple_class_name()
         else { return method_ref.clone() };
@@ -44,6 +45,7 @@ impl MappingsExt for mappings::Mappings {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     fn map_field_ref(&self, field_ref: &minijvm::FieldRef) -> minijvm::FieldRef {
         let Some(class_name) = field_ref.class.descriptor.simple_class_name()
         else { return field_ref.clone() };
@@ -90,6 +92,7 @@ pub struct MappedClassExtractor {
 }
 
 impl MappedClassExtractor {
+    #[tracing::instrument(skip(mappings, _class_map))]
     fn map_instruction(mappings: &mappings::Mappings, _class_map: &mappings::Class, instruction: &minijvm::Instruction) -> minijvm::Instruction {
         use minijvm::Instruction as Instr;
 
@@ -131,6 +134,7 @@ impl MappedClassExtractor {
                     .map(|msc| msc.name.clone())
                     .unwrap_or_else(|| super_class.clone())
             }),
+            signature: class.signature.as_ref().map(|sign| sign.to_mapped(mappings)),
             fields: class.fields.iter()
                 .map(|field| {
                     let descriptor = field.descriptor.to_mapped(mappings);
@@ -141,6 +145,7 @@ impl MappedClassExtractor {
                         access_flags: field.access_flags.clone(),
                         name,
                         descriptor,
+                        signature: field.signature.as_ref().map(|sign| sign.to_mapped(mappings)),
                         constant_value: field.constant_value.as_ref().map(|mc| mappings.map_constant(mc)),
                     }
                 })
@@ -155,6 +160,7 @@ impl MappedClassExtractor {
                         access_flags: method.access_flags.clone(),
                         name,
                         descriptor,
+                        signature: method.signature.as_ref().map(|sign| sign.to_mapped(mappings)),
                         code: method.code.as_ref().map(|code| minijvm::Code {
                             instructions: code.instructions.iter()
                                 .map(|instr| Self::map_instruction(mappings, class_map, instr))

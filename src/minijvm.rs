@@ -2,8 +2,9 @@
 //! using noak's types
 
 mod descriptors;
-
 pub use descriptors::*;
+pub mod signatures;
+pub use signatures::{ JavaTypeSignature, ClassSignature, MethodSignature  };
 pub mod decomped;
 mod ident;
 pub use ident::*;
@@ -177,6 +178,7 @@ pub struct Field {
     pub access_flags: AccessFlags,
     pub name: Ident,
     pub descriptor: TypeDescriptor,
+    pub signature: Option<JavaTypeSignature>,
     pub constant_value: Option<Constant>,
 }
 
@@ -489,6 +491,7 @@ pub struct Method {
     pub access_flags: AccessFlags,
     pub name: Ident,
     pub descriptor: MethodDescriptor,
+    pub signature: Option<MethodSignature>,
     pub code: Option<Code>,
 }
 
@@ -497,6 +500,7 @@ pub struct Class {
     pub access_flags: AccessFlags,
     pub name: IdentPath,
     pub super_class: Option<IdentPath>,
+    pub signature: Option<ClassSignature>,
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
 }

@@ -70,6 +70,7 @@ impl super::ExtractorKind for PacketsExtractor {
         "packets_extractor"
     }
 
+    #[tracing::instrument(name = "packets_extractor", skip_all, fields(version_id = %manager.version().id))]
     async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Packets> {
         extract_using_protocols(manager).await
     }

@@ -261,8 +261,14 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
     let args = Args::parse();
+
+    tracing_subscriber::fmt()
+        .with_file(true)
+        .with_line_number(true)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     let state = AppState {
         args,
         client: reqwest::Client::new(),

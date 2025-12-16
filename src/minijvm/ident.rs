@@ -23,6 +23,7 @@ fn is_valid_ident(s: &str) -> bool {
 pub struct Ident(pub String);
 
 impl Ident {
+    // TODO: I think this is wrong as identifiers in the bytecode are way more lenient
     pub fn new(value: impl Into<String>) -> Self {
         let str = value.into();
         debug_assert!(is_valid_ident(&str), "Invalid identifier: {:?}", str);

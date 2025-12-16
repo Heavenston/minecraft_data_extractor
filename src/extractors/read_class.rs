@@ -5,7 +5,7 @@ use std::{ collections::HashMap, io::Read };
 use anyhow::{ anyhow, bail, Context };
 use itertools::Itertools;
 use rc_zip_sync::ReadZip as _;
-use tracing::warn;
+use tracing::{ error, warn };
 
 #[ouroboros::self_referencing]
 struct OwnedZipFile {
@@ -160,46 +160,29 @@ impl ReadClassExtractor {
             access_flags: minijvm::AccessFlags::from(noak_class.access_flags()),
             name: minijvm::IdentPath::new(pool_str!(noak_this_class.name)?.replace('/', ".")),
             super_class: noak_super_class.map(|c| pool_str!(c.name)).transpose()?.map(|s: &str| s.replace('/', ".")).map(minijvm::IdentPath::new),
+            signature: None,
             fields: Vec::new(),
             methods: Vec::new(),
         };
 
-        for field in noak_class.fields() {
-            let _span = tracing::trace_span!("Reading a method");
-            let field = try_or!(field; orelse continue);
-
-            let mut constant_value = None;
-            for attr in field.attributes() {
-                let attr = try_or!(attr; orelse continue);
-                let content = attr.read_content(noak_class.pool())?;
-                let noak::reader::AttributeContent::ConstantValue(cv) = content
-                else { continue };
-                constant_value = Some(constant_from_item(pool!(cv.value())?)?);
+        let mut bootstrap_methods = Vec::new();
+        for attr in noak_class.attributes() {
+            let attr = try_or!(attr; orelse continue);
+            let content = try_or!(attr.read_content(noak_class.pool()); orelse continue);
+            if let noak::reader::AttributeContent::Signature(s) = &content {
+                let signature_str = pool_str!(s.signature())?;
+                out_class.signature = minijvm::ClassSignature::parse_complete(signature_str)
+                    .inspect_err(|e| error!(error = %e, signature = signature_str, "Could not parse class signature"))
+                    .ok();
             }
-
-            out_class.fields.push(minijvm::Field {
-                access_flags: minijvm::AccessFlags::from(field.access_flags()),
-                name: minijvm::Ident::new(pool_str!(field.name())?),
-                descriptor: minijvm::TypeDescriptor::parse_complete(pool_str!(field.descriptor())?)?,
-                constant_value,
-            });
-        }
-
-        let bootstrap_methods = {
-            let mut methods = Vec::new();
-            for attr in noak_class.attributes() {
-                let attr = try_or!(attr; orelse continue);
-                let Ok(noak::reader::AttributeContent::BootstrapMethods(bsm)) = attr.read_content(noak_class.pool())
-                else { continue };
+            if let noak::reader::AttributeContent::BootstrapMethods(bsm) = &content {
                 for method in bsm.methods() {
                     let method = try_or!(method; orelse continue);
-                    methods.push(method);
+                    bootstrap_methods.push(method);
                 }
             }
-            methods
-        };
+        }
 
-        // Convert the noak methods into minijvm's
         let bootstrap_methods = bootstrap_methods.into_iter()
             .map(|bootstrap_method| -> anyhow::Result<minijvm::DynamicCallSite> {
                 let mut static_args = Vec::new();
@@ -218,8 +201,38 @@ impl ReadClassExtractor {
             })
             .try_collect::<_, Vec<_>, _>()?
         ;
+
+        for field in noak_class.fields() {
+            let _span = tracing::trace_span!("Reading a method");
+            let field = try_or!(field; orelse continue);
+
+            let mut signature = None;
+            let mut constant_value = None;
+            for attr in field.attributes() {
+                let attr = try_or!(attr; orelse continue);
+                let content = try_or!(attr.read_content(noak_class.pool()); orelse continue);
+                if let noak::reader::AttributeContent::Signature(s) = &content {
+                    let signature_str = pool_str!(s.signature())?;
+                    signature = minijvm::JavaTypeSignature::parse_complete(signature_str)
+                        .inspect_err(|e| error!(error = %e, signature = signature_str, "Could not parse java type signature"))
+                        .ok();
+                }
+                if let noak::reader::AttributeContent::ConstantValue(cv) = &content {
+                    constant_value = Some(constant_from_item(pool!(cv.value())?)?);
+                }
+            }
+
+            out_class.fields.push(minijvm::Field {
+                access_flags: minijvm::AccessFlags::from(field.access_flags()),
+                name: minijvm::Ident::new(pool_str!(field.name())?),
+                descriptor: minijvm::TypeDescriptor::parse_complete(pool_str!(field.descriptor())?)?,
+                signature,
+                constant_value,
+            });
+        }
         
-        let convert_code = |code: noak::reader::attributes::Code<'_>| -> anyhow::Result<minijvm::Code> {
+        // Convert the noak methods into minijvm's
+        let convert_code = |code: &noak::reader::attributes::Code<'_>| -> anyhow::Result<minijvm::Code> {
             // First collect all raw instructions with their byte indices so we
             // can resolve branch targets to instruction indices.
             let mut raw_instructions = Vec::<(CodeIndex, RI)>::new();
@@ -652,14 +665,23 @@ impl ReadClassExtractor {
         for method in noak_class.methods() {
             tracing::trace_span!("Reading a method");
             let method = try_or!(method; orelse continue);
+
             let mut found_code = None;
+            let mut signature = None;
 
             for attr in method.attributes() {
                 tracing::trace_span!("Reading a method's attr");
                 let attr = try_or!(attr; orelse continue);
-                let Ok(noak::reader::AttributeContent::Code(code)) = attr.read_content(noak_class.pool())
-                else { continue };
-                found_code = Some(convert_code(code)?);
+                let content = try_or!(attr.read_content(noak_class.pool()); orelse continue);
+                if let noak::reader::AttributeContent::Signature(s) = &content {
+                    let signature_str = pool_str!(s.signature())?;
+                    signature = minijvm::MethodSignature::parse_complete(signature_str)
+                        .inspect_err(|e| error!(error = %e, signature = signature_str, "Could not parse method signature"))
+                        .ok();
+                }
+                if let noak::reader::AttributeContent::Code(code) = &content {
+                    found_code = Some(convert_code(code)?);
+                }
             }
 
             let name = minijvm::Ident::new(pool_str!(method.name())?);
@@ -668,6 +690,7 @@ impl ReadClassExtractor {
                 name,
                 descriptor: minijvm::MethodDescriptor::parse_complete(pool_str!(method.descriptor())?)?,
                 code: found_code,
+                signature,
             });
         }
 
