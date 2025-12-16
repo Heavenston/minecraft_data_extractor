@@ -813,6 +813,7 @@ impl DecompClassExtractor {
     fn decomp(class: &minijvm::Class) -> anyhow::Result<decomped::Class> {
         let mut result = decomped::Class {
             name: class.name.clone(),
+            access_flags: class.access_flags.clone(),
             super_class: class.super_class.clone(),
             enum_variants: Vec::new(),
             methods: class.methods.iter().map(|method| -> anyhow::Result<decomped::Method> {

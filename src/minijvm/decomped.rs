@@ -1,7 +1,7 @@
 pub mod visitor;
 use super::{ Ident, IdentPath, TypeDescriptor, TypeDescriptorKind, MethodDescriptor, AccessFlags };
 
-use std::{borrow::Cow, fmt::Write, ops::Deref};
+use std::{borrow::Cow, fmt::Write, ops::Deref, sync::Arc};
 use convert_case::ccase;
 
 pub struct ClassPrintContext<'a> {
@@ -555,6 +555,7 @@ pub struct EnumVariant {
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Class {
     pub name: IdentPath,
+    pub access_flags: AccessFlags,
     pub super_class: Option<IdentPath>,
     pub enum_variants: Vec<EnumVariant>,
     pub fields: Vec<Field>,
@@ -563,7 +564,7 @@ pub struct Class {
 
 impl Class {
     pub fn is_enum(&self) -> bool {
-        !self.enum_variants.is_empty()
+        self.access_flags.enum_
     }
 
     pub fn printed(&self) -> String {
