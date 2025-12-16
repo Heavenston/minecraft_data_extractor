@@ -1,4 +1,4 @@
-use crate::{mappings, minijvm};
+use crate::{extractors::mojang_mappings, mappings, minijvm};
 
 use anyhow::bail;
 use tracing::warn;
@@ -176,7 +176,17 @@ impl super::ExtractorKind for MappedClassExtractor {
 
     async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
         let mappings = match self.mappings_brand {
-            mappings::Brand::Mojmaps => manager.extract(super::mojang_mappings::MojangMappingsExtractor).await?,
+            // Versions without obfuscation
+            mappings::Brand::Mojmaps if manager.version().release_time > *mojang_mappings::MOJMAPS_LAST_VERSION_TIME => {
+                let decomped_class = manager.extract(super::read_class::ReadClassExtractor {
+                    class: self.class.clone(),
+                }).await?;
+
+                return Ok((*decomped_class).clone());
+            },
+            mappings::Brand::Mojmaps => {
+                manager.extract(super::mojang_mappings::MojangMappingsExtractor).await?
+            },
         };
 
         let Some(class_map) = mappings.get_class(&self.class)

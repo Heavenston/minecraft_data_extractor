@@ -7,12 +7,12 @@ use nom::{ bytes::is_not, combinator::complete, sequence::{ preceded, terminated
 use tokio::fs;
 
 // The first version to release official mapping was '1.14.4' which release on '2019-07-19T09:25:47+00:00'
-static MOJMAPS_FIRST_VERSION_TIME: LazyLock<chrono::DateTime<chrono::Utc>> = LazyLock::new(|| {
+pub static MOJMAPS_FIRST_VERSION_TIME: LazyLock<chrono::DateTime<chrono::Utc>> = LazyLock::new(|| {
     chrono::DateTime::parse_from_rfc3339("2019-07-19T09:25:47+00:00").unwrap()
         .to_utc()
 });
 // The last version to release official mappings (before obfuscation was removed) was '1.21.11' which release on '2025-12-09T12:23:30+00:00'
-static MOJMAPS_LAST_VERSION_TIME: LazyLock<chrono::DateTime<chrono::Utc>> = LazyLock::new(|| {
+pub static MOJMAPS_LAST_VERSION_TIME: LazyLock<chrono::DateTime<chrono::Utc>> = LazyLock::new(|| {
     chrono::DateTime::parse_from_rfc3339("2025-12-09T12:23:30+00:00").unwrap()
         .to_utc()
 });
