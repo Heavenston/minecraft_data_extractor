@@ -1,10 +1,10 @@
-use crate::{mappings, minijvm::{self, decomped::{self, visitor::{mut_visitor as mv, ref_visitor as rv}}}};
+use crate::{ mappings, minijvm::{ self, decomped::{ self, visitor::{ mut_visitor as mv, ref_visitor as rv } } } };
 use mv::MutVisitor;
 use rv::RefVisitor;
 
 use std::collections::HashMap;
 use anyhow::anyhow;
-use tracing::warn;
+use tracing::{ info_span, warn, error };
 use itertools::Itertools;
 
 struct LambdaExtractor;
@@ -809,17 +809,23 @@ impl DecompClassExtractor {
         Ok(statements)
     }
 
+    #[tracing::instrument(name = "decomp_class", skip_all, fields(class_name = %class.name))]
     fn decomp(class: &minijvm::Class) -> anyhow::Result<decomped::Class> {
         let mut result = decomped::Class {
             name: class.name.clone(),
             super_class: class.super_class.clone(),
             enum_variants: Vec::new(),
             methods: class.methods.iter().map(|method| -> anyhow::Result<decomped::Method> {
+                let _span = info_span!("decomp_method", method_name = %method.name).entered();
+
                 Ok(decomped::Method {
                     name: method.name.clone(),
                     descriptor: method.descriptor.clone(),
                     access_flags: method.access_flags.clone(),
-                    code: method.code.as_ref().map(Self::decomp_code).transpose()?,
+                    // Decompilation error is mapped to None with a warning
+                    code: method.code.as_ref().map(Self::decomp_code).transpose().inspect_err(|e| {
+                        error!(error = %e, "Error while decompiling method code");
+                    }).ok().flatten(),
                 })
             }).try_collect()?,
             fields: class.fields.iter().map(|field| decomped::Field {
