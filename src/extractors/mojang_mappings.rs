@@ -11,6 +11,11 @@ static MOJMAPS_FIRST_VERSION_TIME: LazyLock<chrono::DateTime<chrono::Utc>> = Laz
     chrono::DateTime::parse_from_rfc3339("2019-07-19T09:25:47+00:00").unwrap()
         .to_utc()
 });
+// The last version to release official mappings (before obfuscation was removed) was '1.21.11' which release on '2025-12-09T12:23:30+00:00'
+static MOJMAPS_LAST_VERSION_TIME: LazyLock<chrono::DateTime<chrono::Utc>> = LazyLock::new(|| {
+    chrono::DateTime::parse_from_rfc3339("2025-12-09T12:23:30+00:00").unwrap()
+        .to_utc()
+});
 
 // Built only with mojang mappings in mind and does not try to follow any kind of
 // specification or standard, may break if there is any kind of change to the mappings
@@ -125,7 +130,7 @@ impl super::ExtractorKind for MojangMappingsExtractor {
     }
 
     async fn extract(self, manager: &mut super::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
-        if manager.version().release_time < *MOJMAPS_FIRST_VERSION_TIME {
+        if manager.version().release_time < *MOJMAPS_FIRST_VERSION_TIME || manager.version().release_time > *MOJMAPS_LAST_VERSION_TIME {
             return Err(super::VersionNotSupportedError.into());
         }
 
