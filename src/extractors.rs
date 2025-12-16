@@ -1,4 +1,3 @@
-pub mod packet_info;
 pub mod server_jar;
 pub mod version_json;
 pub mod mapped_class;

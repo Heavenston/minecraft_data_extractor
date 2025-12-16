@@ -93,6 +93,9 @@ pub(crate) struct Args {
     /// Directory where all cache should be stored
     #[arg(long, short, default_value = "mc_data_cache")]
     cache_output: PathBuf,
+    /// Directory where the extraction output should be stored
+    #[arg(long, short, default_value = "mc_data")]
+    output: PathBuf,
     /// If specified, only download and extract the data for the given version(s)
     /// Can be given multiple times
     #[arg(short, long)]
@@ -242,7 +245,13 @@ async fn load_version(state: &AppState, version: &version_manifest::Version) -> 
 
     if !special {
         let c = manager.extract(extractors::packets::PacketsExtractor).await?;
-        println!("{c:#?}");
+
+        let version_out_folder = state.args.output.join(format!("{}", version.id));
+        fs::create_dir_all(&version_out_folder).await?;
+        let packets_json_path = version_out_folder.join("packets.json");
+
+        let serialized = serde_json::to_string_pretty(&*c)?;
+        fs::write(&packets_json_path, &serialized).await?;
     }
 
     manager.finish().await?;
@@ -260,6 +269,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     fs::create_dir_all(&state.args.cache_output).await?;
+    fs::create_dir_all(&state.args.output).await?;
+
     let manifest = get_updated_manifest_file(&state).await?;
     info!(latest_release = manifest.latest.release, latest_snapshot = manifest.latest.snapshot, "Manifest loaded");
 
