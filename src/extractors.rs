@@ -97,9 +97,9 @@ mod manager {
             bincode::config::standard()
         }
 
-        pub async fn new(app_state: &'a AppState, version: &'a VersionClientJson) -> anyhow::Result<Self> {
+        async fn read_cache(app_state: &'a AppState, version: &'a VersionClientJson) -> anyhow::Result<Option<VersionExtractionCache>> {
             let version_folder = app_state.version_folder(&version.id);
-            let cache = match fs::read(version_folder.join("extraction_cache.bincode")).await {
+            Ok(match fs::read(version_folder.join("extraction_cache.bincode")).await {
                 Ok(bytes) => match bincode::decode_from_slice::<VersionExtractionCache, _>(&bytes, Self::bincode_config()) {
                     Ok((cache, _)) => {
                         if cache.code_hash == crate::CODE_HASH {
@@ -117,6 +117,14 @@ mod manager {
                 },
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(e) => return Err(e.into()),
+            })
+        }
+
+        pub async fn new(app_state: &'a AppState, version: &'a VersionClientJson) -> anyhow::Result<Self> {
+            let cache = if app_state.args.disable_extraction_cache {
+                None
+            } else {
+                Self::read_cache(app_state, version).await?
             };
 
             Ok(Self {

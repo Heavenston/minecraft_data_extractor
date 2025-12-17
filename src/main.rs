@@ -109,6 +109,9 @@ pub(crate) struct Args {
     /// If specified, do not print the unsupported version warnings
     #[arg(short = 'u', long)]
     ignore_unsupported: bool,
+    /// If specified, the extraction cache won't be read (but will still be written to)
+    #[arg(short = 'n', long = "no-cache")]
+    disable_extraction_cache: bool,
 
     /// If specified, will read and map the given class and print the result
     #[arg(long)]
