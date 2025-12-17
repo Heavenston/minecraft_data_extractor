@@ -128,7 +128,7 @@ impl extractors::ExtractorKind for JavaDataTypeExtractor {
                     _ => unreachable!(),
                 });
             },
-            s if s.starts_with("net.minecraft") || s.starts_with("com.mojang") => (),
+            s if s.starts_with("net.minecraft") => (),
             _ => {
                 warn!(%class_name, "Unknown ty");
                 return Ok(DataType::Other);
