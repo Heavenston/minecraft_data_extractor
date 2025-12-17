@@ -192,9 +192,10 @@ async fn extract_packet(manager: &mut extractors::ExtractionManager<'_>, packet_
 pub(super) async fn extract_using_protocols(manager: &mut extractors::ExtractionManager<'_>) -> anyhow::Result<Packets> {
     let protocols_names = vec![
         "net.minecraft.network.protocol.status.StatusProtocols",
-        // "net.minecraft.network.protocol.handshake.HandshakeProtocols",
-        // "net.minecraft.network.protocol.login.LoginProtocols",
-        // "net.minecraft.network.protocol.game.GameProtocols",
+        "net.minecraft.network.protocol.handshake.HandshakeProtocols",
+        "net.minecraft.network.protocol.login.LoginProtocols",
+        "net.minecraft.network.protocol.configuration.ConfigurationProtocols",
+        "net.minecraft.network.protocol.game.GameProtocols",
     ];
     let mut protocols = Vec::new();
     for class_name in protocols_names {
