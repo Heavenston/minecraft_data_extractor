@@ -181,7 +181,7 @@ fn convert_constant(constant: &minijvm::Constant) -> decomped::Constant {
         minijvm::Constant::String(v) => decomped::Constant::String(v.clone()),
         minijvm::Constant::Class(class_ref) => decomped::Constant::Class(class_ref.clone()),
         minijvm::Constant::MethodHandle(method_ref) => decomped::Constant::MethodHandle(method_ref.clone()),
-        minijvm::Constant::MethodType(method_descriptor) => decomped::Constant::MethodType(method_descriptor.clone()),
+        minijvm::Constant::MethodType(method_descriptor) => decomped::Constant::MethodType(method_descriptor.to_signature()),
         minijvm::Constant::Null => decomped::Constant::Null,
     }
 }
@@ -540,15 +540,17 @@ fn decomp_block(
                 }
             }
             Instr::InvokeDynamic { call_site, name, descriptor } => {
-                let args = pop_args(stack, descriptor.args.len())?;
+                let signature = descriptor.to_signature();
+                let is_void = signature.result.is_void();
+                let args = pop_args(stack, signature.arguments.len())?;
                 let expr = decomped::Expression::InvokeDynamic {
                     call_site: call_site.clone(),
                     name: name.clone(),
-                    descriptor: descriptor.clone(),
+                    signature,
                     args,
                 };
 
-                if descriptor.return_type.ty.is_void() {
+                if is_void {
                     statements.push(decomped::Statement::Expression { expr });
                 } else {
                     stack.push(expr);
@@ -821,7 +823,7 @@ impl DecompClassExtractor {
 
                 Ok(decomped::Method {
                     name: method.name.clone(),
-                    descriptor: method.descriptor.clone(),
+                    signature: method.signature.clone().unwrap_or_else(|| method.descriptor.to_signature()),
                     access_flags: method.access_flags.clone(),
                     // Decompilation error is mapped to None with a warning
                     code: method.code.as_ref().map(Self::decomp_code).transpose().inspect_err(|e| {
@@ -831,7 +833,7 @@ impl DecompClassExtractor {
             }).try_collect()?,
             fields: class.fields.iter().map(|field| decomped::Field {
                 name: field.name.clone(),
-                descriptor: field.descriptor.clone(),
+                signature: field.signature.clone().unwrap_or_else(|| field.descriptor.to_signature()),
                 access_flags: field.access_flags.clone(),
                 // FIXME: Is it correct to convert to an expression?
                 init_value: field.constant_value.as_ref().map(|value| decomped::Expression::Constant { value: convert_constant(value) }),

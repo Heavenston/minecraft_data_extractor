@@ -23,17 +23,28 @@ pub struct EnumType {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bincode::Decode, bincode::Encode)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum DataType {
     Byte,
+    Char,
+    Double,
+    Float,
     Int,
+    Long,
+    Short,
     Boolean,
     /// java.lang.String
     String,
     /// java.util.UUID
+    #[serde(rename = "uuid")]
     UUID,
     Record(RecordType),
     Enum(EnumType),
     Array(Box<DataType>),
+    // java.util.List
+    List(Box<DataType>),
+    // java.util.Optional
+    Optional(Box<DataType>),
     Other,
     Error { name: String },
 }

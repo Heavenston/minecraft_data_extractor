@@ -69,7 +69,7 @@ impl ReadClassExtractor {
         macro_rules! try_or {
             ($e: expr; orelse $else: expr) => {match $e {
                 Ok(val) => val,
-                Err(e) => { tracing::warn!(?e); $else },
+                Err(e) => { tracing::warn!(error = %e); $else },
             }};
         }
 

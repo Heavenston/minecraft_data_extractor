@@ -3,6 +3,17 @@ use nom::Finish;
 
 use crate::mappings;
 use super::*;
+use super::signatures::{
+    ArrayTypeSignature,
+    BaseTypeSignature,
+    ClassTypeSignature,
+    Identifier,
+    JavaTypeSignature,
+    MethodResult,
+    MethodSignature,
+    ReferenceTypeSignature,
+    SimpleClassTypeSignature,
+};
 
 #[derive(Clone, PartialEq, Eq, derive_more::IsVariant, bincode::Encode, bincode::Decode)]
 pub enum TypeDescriptorKind {
@@ -128,6 +139,40 @@ impl TypeDescriptor {
         }
     }
 
+    pub fn to_signature(&self) -> JavaTypeSignature {
+        let mut sig = match &self.ty {
+            TypeDescriptorKind::Byte => JavaTypeSignature::Base(BaseTypeSignature::Byte),
+            TypeDescriptorKind::Char => JavaTypeSignature::Base(BaseTypeSignature::Char),
+            TypeDescriptorKind::Double => JavaTypeSignature::Base(BaseTypeSignature::Double),
+            TypeDescriptorKind::Float => JavaTypeSignature::Base(BaseTypeSignature::Float),
+            TypeDescriptorKind::Int => JavaTypeSignature::Base(BaseTypeSignature::Int),
+            TypeDescriptorKind::Long => JavaTypeSignature::Base(BaseTypeSignature::Long),
+            TypeDescriptorKind::Short => JavaTypeSignature::Base(BaseTypeSignature::Short),
+            TypeDescriptorKind::Boolean => JavaTypeSignature::Base(BaseTypeSignature::Boolean),
+            TypeDescriptorKind::Void => panic!("Cannot convert void descriptor to JavaTypeSignature"),
+            TypeDescriptorKind::Object(o) => {
+                let mut parts = o.split('.').collect::<Vec<_>>();
+                let class_name = parts.pop().expect("IdentPath cannot be empty");
+                JavaTypeSignature::Reference(ReferenceTypeSignature::Class(ClassTypeSignature {
+                    package: parts.into_iter().map(Identifier::new).collect(),
+                    class: SimpleClassTypeSignature {
+                        name: Identifier::new(class_name),
+                        type_arguments: Vec::new(),
+                    },
+                    suffix: Vec::new(),
+                }))
+            }
+        };
+
+        for _ in 0..self.array_depth {
+            sig = JavaTypeSignature::Reference(ReferenceTypeSignature::Array(ArrayTypeSignature {
+                ty: Box::new(sig),
+            }));
+        }
+
+        sig
+    }
+
     pub fn simple_class_name(&self) -> Option<&IdentPath> {
         match self {
             Self { array_depth: 0, ty: TypeDescriptorKind::Object(h) } => Some(h),
@@ -185,6 +230,18 @@ impl MethodDescriptor {
         Self {
             return_type: self.return_type.to_mapped(mappings),
             args: self.args.iter().map(|ty| ty.to_mapped(mappings)).collect(),
+        }
+    }
+
+    pub fn to_signature(&self) -> MethodSignature {
+        MethodSignature {
+            type_parameters: Vec::new(),
+            arguments: self.args.iter().map(TypeDescriptor::to_signature).collect(),
+            result: match self.return_type.ty {
+                TypeDescriptorKind::Void => MethodResult::Void,
+                _ => MethodResult::Type(self.return_type.to_signature()),
+            },
+            throws_signature: Vec::new(),
         }
     }
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use tracing::{ warn, error };
 
 use crate::extractors::{ self, decomp_class };
@@ -51,19 +51,19 @@ impl rv::RefVisitor for AddPacketVisitor {
     }
 }
 
-async fn read_java_data_type(manager: &mut extractors::ExtractionManager<'_>, descriptor: &minijvm::TypeDescriptor) -> anyhow::Result<Arc<DataType>> {
-    match Box::pin(manager.extract(JavaDataTypeExtractor { descriptor: descriptor.clone() })).await {
+async fn read_java_data_type(manager: &mut extractors::ExtractionManager<'_>, signature: &minijvm::JavaTypeSignature) -> anyhow::Result<Arc<DataType>> {
+    match Box::pin(manager.extract(JavaDataTypeExtractor { signature: signature.clone() })).await {
         Ok(dt) => Ok(dt),
         Err(error) => {
-            error!(?descriptor, %error, "Error while extracting java data type");
-            return Ok(Arc::new(DataType::Error { name: format!("{descriptor:?}") }));
+            error!(?signature, %error, "Error while extracting java data type");
+            return Ok(Arc::new(DataType::Error { name: format!("{signature:?}") }));
         },
     }
 }
 
 #[derive(Debug, bincode::Encode)]
 struct JavaDataTypeExtractor {
-    descriptor: minijvm::TypeDescriptor,
+    signature: minijvm::JavaTypeSignature,
 }
 
 impl extractors::ExtractorKind for JavaDataTypeExtractor {
@@ -74,28 +74,69 @@ impl extractors::ExtractorKind for JavaDataTypeExtractor {
     }
 
     #[tracing::instrument(name = "extract_java_data_type", skip(manager), fields(version_id = manager.version().id))]
-    async fn extract(mut self, manager: &mut extractors::ExtractionManager<'_>) -> anyhow::Result<Self::Output> {
-        if self.descriptor.array_depth > 0 {
-            self.descriptor.array_depth -= 1;
-            let element = Box::pin(manager.extract(self)).await?;
-            return Ok(DataType::Array(Box::new((*element).clone())));
-        }
-
-        let ident_path = match &self.descriptor.ty {
-            minijvm::TypeDescriptorKind::Byte => return Ok(DataType::Byte),
-            minijvm::TypeDescriptorKind::Int => return Ok(DataType::Int),
-            minijvm::TypeDescriptorKind::Boolean => return Ok(DataType::Boolean),
-            minijvm::TypeDescriptorKind::Object(ident_path) if ident_path == "java.lang.String" => return Ok(DataType::String),
-            minijvm::TypeDescriptorKind::Object(ident_path) if ident_path == "java.util.UUID" => return Ok(DataType::UUID),
-            minijvm::TypeDescriptorKind::Object(ident_path) if ident_path.starts_with("net.minecraft") || ident_path.starts_with("com.mojang") => ident_path,
-            ty => {
-                warn!(?ty, "Unknown ty");
-                return Ok(DataType::Other);
-            },
+    async fn extract(self, manager: &mut extractors::ExtractionManager<'_>) -> anyhow::Result<DataType> {
+        use minijvm::signatures::{
+            BaseTypeSignature as Base,
+            JavaTypeSignature as TypeSign,
+            ReferenceTypeSignature as RefSign,
+        };
+        let ref_type = match self.signature {
+            TypeSign::Reference(ref_type) => ref_type,
+            TypeSign::Base(Base::Byte) => return Ok(DataType::Byte),
+            TypeSign::Base(Base::Char) => return Ok(DataType::Char),
+            TypeSign::Base(Base::Double) => return Ok(DataType::Double),
+            TypeSign::Base(Base::Float) => return Ok(DataType::Float),
+            TypeSign::Base(Base::Int) => return Ok(DataType::Int),
+            TypeSign::Base(Base::Long) => return Ok(DataType::Long),
+            TypeSign::Base(Base::Short) => return Ok(DataType::Short),
+            TypeSign::Base(Base::Boolean) => return Ok(DataType::Boolean),
         };
 
+        let class_type = match ref_type {
+            RefSign::Class(class_type) => class_type,
+            RefSign::TypeVariable(_) => return Ok(DataType::Other),
+            RefSign::Array(array) => return Ok(DataType::Array({
+                let element = Box::pin(manager.extract(Self {
+                    signature: (*array.ty).clone(),
+                })).await?;
+                return Ok(DataType::Array(Box::new((*element).clone())));
+            })),
+        };
+
+        let class_name = class_type.class_name();
+
+        match class_name.as_str() {
+            "java.lang.String" => return Ok(DataType::String),
+            "java.util.UUID" => return Ok(DataType::UUID),
+            "java.util.Optional" | "java.util.List" => {
+                let inner_ty = class_type.class.type_arguments.first()
+                    .ok_or_else(|| anyhow!("java.util.Optional/List without any type argument?"))?;
+                let inner_dt = match inner_ty {
+                    minijvm::signatures::TypeArgument::Type { wildcard_indicator: None, ty } => {
+                        Box::new((*Box::pin(manager.extract(Self {
+                            signature: TypeSign::Reference(ty.clone()),
+                        })).await?).clone())
+                    },
+                    type_parameter => {
+                        warn!(?type_parameter, "Unsupported wildcard inside Optional/List");
+                        Box::new(DataType::Other)
+                    },
+                };
+                return Ok(match class_name.as_str() {
+                    "java.util.Optional" => DataType::Optional(inner_dt),
+                    "java.util.List" => DataType::List(inner_dt),
+                    _ => unreachable!(),
+                });
+            },
+            s if s.starts_with("net.minecraft") || s.starts_with("com.mojang") => (),
+            _ => {
+                warn!(%class_name, "Unknown ty");
+                return Ok(DataType::Other);
+            },
+        }
+
         let decomped_class = manager.extract(decomp_class::DecompClassExtractor {
-            class: ident_path.to_string(),
+            class: class_name.clone(),
             mappings_brand: crate::mappings::Brand::Mojmaps,
         }).await?;
 
@@ -107,7 +148,7 @@ impl extractors::ExtractorKind for JavaDataTypeExtractor {
                 variants.push(var.name.to_string());
             }
             Ok(DataType::Enum(super::EnumType {
-                name: ident_path.to_string(),
+                name: class_name.clone(),
                 variants
             }))
         }
@@ -116,12 +157,12 @@ impl extractors::ExtractorKind for JavaDataTypeExtractor {
 
             for field in &decomped_class.fields {
                 if field.access_flags.static_ { continue; }
-                let ty = read_java_data_type(manager, &field.descriptor).await?;
+                let ty = read_java_data_type(manager, &field.signature).await?;
                 fields.insert(field.name.to_string(), (*ty).clone());
             }
 
             Ok(DataType::Record(super::RecordType {
-                name: ident_path.to_string(),
+                name: class_name.clone(),
                 fields,
             }))
         }
@@ -137,7 +178,7 @@ async fn extract_packet(manager: &mut extractors::ExtractionManager<'_>, packet_
     //     mappings_brand: crate::mappings::Brand::Mojmaps,
     // }).await?;
 
-    let packet_class_data_type = read_java_data_type(manager, &packet_class.descriptor).await?;
+    let packet_class_data_type = read_java_data_type(manager, &packet_class.descriptor.to_signature()).await?;
     let DataType::Record(packet_class_record_type) = &*packet_class_data_type
     else { bail!("Expected packet class to be a record but got: {packet_class_data_type:?}") };
 

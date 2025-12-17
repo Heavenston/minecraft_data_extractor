@@ -402,6 +402,12 @@ pub struct ClassTypeSignature {
 }
 
 impl ClassTypeSignature {
+    pub fn class_name(&self) -> String {
+        self.package.iter()
+            .map(|a| &**a).chain([&*self.class.name])
+            .intersperse(".").collect::<String>()
+    }
+
     pub fn parse(content: &str) -> nom::IResult<&str, Self> {
         delimited(
             char('L'),
@@ -417,9 +423,7 @@ impl ClassTypeSignature {
     }
 
     pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Self {
-        let class_name = self.package.iter()
-            .map(|a| &**a).chain([&*self.class.name])
-            .intersperse(".").collect::<String>();
+        let class_name = self.class_name();
 
         let mapped_name_with_package = mappings.map_class(&class_name)
             .map(|class| &*class.name)

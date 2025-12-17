@@ -1,5 +1,6 @@
 pub mod visitor;
-use super::{ Ident, IdentPath, TypeDescriptor, TypeDescriptorKind, MethodDescriptor, AccessFlags };
+use super::{ Ident, IdentPath, AccessFlags, JavaTypeSignature, MethodSignature };
+use super::signatures;
 
 use std::{ borrow::Cow, fmt::Write, ops::Deref };
 use convert_case::ccase;
@@ -30,22 +31,25 @@ impl<'a> Deref for MethodPrintContext<'a> {
 }
 
 impl<'a> MethodPrintContext<'a> {
-    pub fn new(parent: &'a ClassPrintContext<'a>, is_static: bool, args: &[TypeDescriptor]) -> Self {
+    pub fn new(parent: &'a ClassPrintContext<'a>, is_static: bool, args: &[JavaTypeSignature]) -> Self {
         let mut arg_slots = Vec::new();
         let mut arg_names = Vec::new();
         let mut slot = if is_static { 0 } else { 1 };
         for (arg_idx, arg) in args.iter().enumerate() {
             arg_slots.push(slot);
-            slot += match arg.ty {
-                TypeDescriptorKind::Long | TypeDescriptorKind::Double => 2,
+            slot += match arg {
+                JavaTypeSignature::Base(signatures::BaseTypeSignature::Long | signatures::BaseTypeSignature::Double) => 2,
                 _ => 1,
             };
 
-            let mut pretty_name = match &arg.ty {
-                TypeDescriptorKind::Object(o) => o.rsplit('.').next()
-                    .map(|l| ccase!(snake, l) /* Technically can make a reserved keyword, but hey... */)
-                    .unwrap_or_else(|| format!("arg{arg_idx}")),
-                k => format!("{k}0"),
+            let mut pretty_name = match arg {
+                JavaTypeSignature::Reference(signatures::ReferenceTypeSignature::Class(c)) => {
+                    let last = c.suffix.last().unwrap_or(&c.class);
+                    ccase!(snake, last.name.to_string())
+                }
+                JavaTypeSignature::Reference(signatures::ReferenceTypeSignature::TypeVariable(v)) => format!("{}0", v.name),
+                JavaTypeSignature::Reference(signatures::ReferenceTypeSignature::Array(_)) => format!("arg{arg_idx}"),
+                JavaTypeSignature::Base(k) => format!("{k}0"),
             };
 
             let mut i = 0;
@@ -74,6 +78,107 @@ impl<'a> MethodPrintContext<'a> {
     }
 }
 
+fn format_type_argument(arg: &signatures::TypeArgument) -> String {
+    match arg {
+        signatures::TypeArgument::Wildcard => "?".to_string(),
+        signatures::TypeArgument::Type { wildcard_indicator, ty } => match wildcard_indicator {
+            Some(signatures::WildcardIndicator::Plus) => format!("? extends {}", format_reference_type_signature(ty)),
+            Some(signatures::WildcardIndicator::Minus) => format!("? super {}", format_reference_type_signature(ty)),
+            None => format_reference_type_signature(ty),
+        },
+    }
+}
+
+fn format_simple_class_type_signature(sig: &signatures::SimpleClassTypeSignature) -> String {
+    let mut s = sig.name.to_string();
+    if !sig.type_arguments.is_empty() {
+        let args = sig.type_arguments.iter()
+            .map(format_type_argument)
+            .collect::<Vec<_>>()
+            .join(", ");
+        s.push('<');
+        s.push_str(&args);
+        s.push('>');
+    }
+    s
+}
+
+fn format_class_type_signature(sig: &signatures::ClassTypeSignature) -> String {
+    let mut s = String::new();
+    if !sig.package.is_empty() {
+        s.push_str(&sig.package.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("."));
+        s.push('.');
+    }
+    s.push_str(&format_simple_class_type_signature(&sig.class));
+    for suffix in &sig.suffix {
+        s.push('.');
+        s.push_str(&format_simple_class_type_signature(suffix));
+    }
+    s
+}
+
+fn format_reference_type_signature(sig: &signatures::ReferenceTypeSignature) -> String {
+    match sig {
+        signatures::ReferenceTypeSignature::Class(c) => format_class_type_signature(c),
+        signatures::ReferenceTypeSignature::TypeVariable(v) => v.name.to_string(),
+        signatures::ReferenceTypeSignature::Array(a) => format!("{}[]", format_java_type_signature(&a.ty)),
+    }
+}
+
+fn format_java_type_signature(sig: &JavaTypeSignature) -> String {
+    match sig {
+        JavaTypeSignature::Reference(r) => format_reference_type_signature(r),
+        JavaTypeSignature::Base(b) => b.to_string(),
+    }
+}
+
+fn format_type_parameter(param: &signatures::TypeParameter) -> String {
+    let mut bounds = Vec::new();
+    if let Some(class_bound) = &param.class_bound {
+        bounds.push(format_reference_type_signature(class_bound));
+    }
+    bounds.extend(param.interface_bounds.iter().map(format_reference_type_signature));
+
+    if bounds.is_empty() {
+        param.name.to_string()
+    }
+    else {
+        format!("{} extends {}", param.name, bounds.join(" & "))
+    }
+}
+
+fn format_type_parameters(type_parameters: &[signatures::TypeParameter]) -> String {
+    if type_parameters.is_empty() {
+        String::new()
+    }
+    else {
+        format!("<{}> ", type_parameters.iter().map(format_type_parameter).collect::<Vec<_>>().join(", "))
+    }
+}
+
+fn format_method_result(result: &signatures::MethodResult) -> String {
+    match result {
+        signatures::MethodResult::Type(ty) => format_java_type_signature(ty),
+        signatures::MethodResult::Void => "void".to_string(),
+    }
+}
+
+fn format_throws_signature(sig: &signatures::ThrowsSignature) -> String {
+    match sig {
+        signatures::ThrowsSignature::Class(c) => format_class_type_signature(c),
+        signatures::ThrowsSignature::TypeVariable(tv) => tv.name.to_string(),
+    }
+}
+
+fn format_throws_clause(throws: &[signatures::ThrowsSignature]) -> String {
+    if throws.is_empty() {
+        String::new()
+    }
+    else {
+        format!(" throws {}", throws.iter().map(format_throws_signature).collect::<Vec<_>>().join(", "))
+    }
+}
+
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum Constant {
     Byte(i8),
@@ -85,7 +190,7 @@ pub enum Constant {
     String(String),
     Class(super::ClassRef),
     MethodHandle(super::MethodHandle),
-    MethodType(MethodDescriptor),
+    MethodType(MethodSignature),
     Null,
 }
 
@@ -104,7 +209,11 @@ impl Constant {
                 super::MethodHandleRef::Method(m) => format!("{}::{}", m.class.descriptor, m.name.0),
                 super::MethodHandleRef::Field(f) => format!("{}::{}", f.class.descriptor, f.name.0),
             },
-            Constant::MethodType(d) => format!("{d}"),
+            Constant::MethodType(d) => {
+                let args = d.arguments.iter().map(format_java_type_signature).collect::<Vec<_>>().join(", ");
+                let return_type = format_method_result(&d.result);
+                format!("{return_type} ({args})")
+            }
             Constant::Null => "null".to_string(),
         }
     }
@@ -149,7 +258,7 @@ pub enum Expression {
     InvokeDynamic {
         call_site: super::DynamicCallSite,
         name: Ident,
-        descriptor: super::MethodDescriptor,
+        signature: MethodSignature,
         args: Vec<Expression>,
     },
 
@@ -489,7 +598,7 @@ impl Statement {
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Field {
     pub name: Ident,
-    pub descriptor: TypeDescriptor,
+    pub signature: JavaTypeSignature,
     pub access_flags: AccessFlags,
 
     pub init_value: Option<Expression>,
@@ -498,37 +607,43 @@ pub struct Field {
 impl Field {
     pub fn printed(&self, ctx: &ClassPrintContext) -> String {
         let modifiers = self.access_flags.printed();
+        let ty = format_java_type_signature(&self.signature);
         let init = self.init_value.as_ref()
             .map(|v| format!(" = {}", v.printed(&MethodPrintContext::new(ctx, self.access_flags.static_, &[]))))
             .unwrap_or_default();
-        format!("{modifiers}{} {}{init};", self.descriptor, self.name.0)
+        format!("{modifiers}{ty} {}{init};", self.name.0)
     }
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Method {
     pub name: Ident,
-    pub descriptor: MethodDescriptor,
+    pub signature: MethodSignature,
     pub access_flags: AccessFlags,
     pub code: Option<Vec<Statement>>,
 }
 
 impl Method {
     pub fn printed(&self, ctx: &ClassPrintContext) -> String {
-        let ctx = MethodPrintContext::new(ctx, self.access_flags.static_, &self.descriptor.args);
+        let ctx = MethodPrintContext::new(ctx, self.access_flags.static_, &self.signature.arguments);
         let modifiers = self.access_flags.printed();
-        let args = self.descriptor.args.iter()
+        let class_name = ctx.class.name.last_name();
+
+        let type_parameters = format_type_parameters(&self.signature.type_parameters);
+        let args = self.signature.arguments.iter()
             .enumerate()
-            .map(|(i, ty)| format!("{ty} {}", ctx.arg_name(i)))
+            .map(|(i, ty)| format!("{} {}", format_java_type_signature(ty), ctx.arg_name(i)))
             .collect::<Vec<_>>()
             .join(", ");
-
-        let class_name = ctx.class.name.last_name();
+        let throws = format_throws_clause(&self.signature.throws_signature);
 
         let mut s = match self.name.0.as_str() {
             "<clinit>" => "static {\n".to_string(),
-            "<init>" => format!("{modifiers}{class_name}({args})"),
-            _ => format!("{modifiers}{} {}({args})", self.descriptor.return_type, self.name.0),
+            "<init>" => format!("{modifiers}{type_parameters}{class_name}({args}){throws}"),
+            _ => {
+                let return_type = format_method_result(&self.signature.result);
+                format!("{modifiers}{type_parameters}{return_type} {}({args}){throws}", self.name.0)
+            }
         };
 
         if let Some(code) = &self.code {
