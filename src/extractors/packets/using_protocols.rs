@@ -7,8 +7,13 @@ use tracing::{ warn, error };
 use crate::extractors::{ self, decomp_class };
 use crate::minijvm::decomped::visitor::ref_visitor::{ self as rv, RefVisitor };
 use crate::{ minijvm::{ self, decomped } };
+use super::{ Packet, Packets, ProtocolState, DataType };
 
-use super::{ Packet, Packets, PacketDirection, ProtocolState, DataType };
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+enum PacketDirection {
+    Serverbound,
+    Clientbound,
+}
 
 #[derive(Debug)]
 struct AddedPacket {
@@ -61,8 +66,9 @@ async fn read_java_data_type(manager: &mut extractors::ExtractionManager<'_>, si
     }
 }
 
-#[derive(Debug, bincode::Encode)]
+#[derive(derive_more::Debug, bincode::Encode)]
 struct JavaDataTypeExtractor {
+    #[debug("{signature}")]
     signature: minijvm::JavaTypeSignature,
 }
 
@@ -107,6 +113,7 @@ impl extractors::ExtractorKind for JavaDataTypeExtractor {
 
         match class_name.as_str() {
             "java.lang.String" => return Ok(DataType::String),
+            "java.lang.Integer" => return Ok(DataType::Int),
             "java.util.UUID" => return Ok(DataType::UUID),
             "java.util.Optional" | "java.util.List" => {
                 let inner_ty = class_type.class.type_arguments.first()
@@ -191,10 +198,10 @@ async fn extract_packet(manager: &mut extractors::ExtractionManager<'_>, packet_
 #[tracing::instrument(skip_all)]
 pub(super) async fn extract_using_protocols(manager: &mut extractors::ExtractionManager<'_>) -> anyhow::Result<Packets> {
     let protocols_names = vec![
-        "net.minecraft.network.protocol.status.StatusProtocols",
         "net.minecraft.network.protocol.handshake.HandshakeProtocols",
-        "net.minecraft.network.protocol.login.LoginProtocols",
+        "net.minecraft.network.protocol.status.StatusProtocols",
         "net.minecraft.network.protocol.configuration.ConfigurationProtocols",
+        "net.minecraft.network.protocol.login.LoginProtocols",
         "net.minecraft.network.protocol.game.GameProtocols",
     ];
     let mut protocols = Vec::new();

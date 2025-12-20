@@ -1,5 +1,7 @@
 //! Based on [https://docs.oracle.com/javase/specs/jvms/se22/html/jvms-4.html#jvms-4.7.9.1]
 
+use std::{fmt::Display, str::FromStr};
+
 use itertools::Itertools;
 use nom::{
     branch::alt,
@@ -50,7 +52,7 @@ impl std::ops::Deref for Identifier {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::IsVariant, derive_more::From, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::IsVariant, derive_more::Display, derive_more::From, bincode::Encode, bincode::Decode)]
 pub enum JavaTypeSignature {
     Reference(ReferenceTypeSignature),
     Base(BaseTypeSignature),
@@ -64,17 +66,23 @@ impl JavaTypeSignature {
         )).parse(content)
     }
 
-    pub fn parse_complete(content: &str) -> anyhow::Result<Self> {
-        use nom::{ Parser as _, combinator::complete };
-
-        Ok(complete(Self::parse).parse(content).finish().map(|(_, v)| v).map_err(|e| e.cloned())?)
-    }
-
     pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Self {
         match self {
             Self::Reference(x) => Self::Reference(x.to_mapped(mappings)),
             Self::Base(x)      => Self::Base     (x.clone()),
         }
+    }
+}
+
+impl FromStr for JavaTypeSignature {
+    type Err = nom::error::Error<String>;
+
+    /// Should be used instead of [`JavaTypeSignature::parse`] will always consume
+    /// the whole input
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use nom::{ Parser as _, combinator::complete };
+
+        Ok(complete(Self::parse).parse(s).finish().map(|(_, v)| v).map_err(|e| e.cloned())?)
     }
 }
 
@@ -99,12 +107,6 @@ impl ClassSignature {
         }).parse(content)
     }
 
-    pub fn parse_complete(content: &str) -> anyhow::Result<Self> {
-        use nom::{ Parser as _, combinator::complete };
-
-        Ok(complete(Self::parse).parse(content).finish().map(|(_, v)| v).map_err(|e| e.cloned())?)
-    }
-
     pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Self {
         Self {
             type_parameters: self.type_parameters.iter()
@@ -113,6 +115,18 @@ impl ClassSignature {
             superinterfaces: self.superinterfaces.iter()
                 .map(|tp| tp.to_mapped(mappings)).collect(),
         }
+    }
+}
+
+impl FromStr for ClassSignature {
+    type Err = nom::error::Error<String>;
+
+    /// Should be used instead of [`ClassSignature::parse`] will always consume
+    /// the whole input
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use nom::{ Parser as _, combinator::complete };
+
+        Ok(complete(Self::parse).parse(s).finish().map(|(_, v)| v).map_err(|e| e.cloned())?)
     }
 }
 
@@ -137,12 +151,6 @@ impl MethodSignature {
         }).parse(content)
     }
 
-    pub fn parse_complete(content: &str) -> anyhow::Result<Self> {
-        use nom::{ Parser as _, combinator::complete };
-
-        Ok(complete(Self::parse).parse(content).finish().map(|(_, v)| v).map_err(|e| e.cloned())?)
-    }
-
     pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Self {
         Self {
             type_parameters: self.type_parameters.iter()
@@ -153,6 +161,18 @@ impl MethodSignature {
             throws_signature: self.throws_signature.iter()
                 .map(|x| x.to_mapped(mappings)).collect(),
         }
+    }
+}
+
+impl FromStr for MethodSignature {
+    type Err = nom::error::Error<String>;
+
+    /// Should be used instead of [`MethodSignature::parse`] will always consume
+    /// the whole input
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use nom::{ Parser as _, combinator::complete };
+
+        Ok(complete(Self::parse).parse(s).finish().map(|(_, v)| v).map_err(|e| e.cloned())?)
     }
 }
 
@@ -293,7 +313,7 @@ impl std::fmt::Display for BaseTypeSignature {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::IsVariant, derive_more::From, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::IsVariant, derive_more::From, bincode::Encode, bincode::Decode)]
 pub enum ReferenceTypeSignature {
     Class(ClassTypeSignature),
     TypeVariable(TypeVariableSignature),
@@ -318,9 +338,11 @@ impl ReferenceTypeSignature {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::IsVariant, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::IsVariant, bincode::Encode, bincode::Decode)]
 pub enum WildcardIndicator {
+    #[display("+")]
     Plus,
+    #[display("-")]
     Minus,
 }
 
@@ -333,9 +355,11 @@ impl WildcardIndicator {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, bincode::Encode, bincode::Decode)]
 pub enum TypeArgument {
+    #[display("*")]
     Wildcard,
+    #[display("{}{ty}", wildcard_indicator.as_ref().map(ToString::to_string).unwrap_or_default())]
     Type {
         wildcard_indicator: Option<WildcardIndicator>,
         ty: ReferenceTypeSignature,
@@ -394,6 +418,20 @@ impl SimpleClassTypeSignature {
     }
 }
 
+impl Display for SimpleClassTypeSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)?;
+        if !self.type_arguments.is_empty() {
+            write!(f, "<")?;
+            for arg in &self.type_arguments {
+                write!(f, "{arg}")?;
+            }
+            write!(f, ">")?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct ClassTypeSignature {
     pub package: Vec<Identifier>,
@@ -447,7 +485,23 @@ impl ClassTypeSignature {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+impl Display for ClassTypeSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "L")?;
+        for p in &self.package {
+            write!(f, "{p}/")?;
+        }
+        write!(f, "{}", self.class)?;
+        for s in &self.suffix {
+            write!(f, ".{s}")?;
+        }
+        write!(f, ";")?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, bincode::Encode, bincode::Decode)]
+#[display("{name}")]
 pub struct TypeVariableSignature {
     pub name: Identifier,
 }
@@ -462,7 +516,8 @@ impl TypeVariableSignature {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, bincode::Encode, bincode::Decode)]
+#[display("[{ty}")]
 pub struct ArrayTypeSignature {
     pub ty: Box<JavaTypeSignature>,
 }

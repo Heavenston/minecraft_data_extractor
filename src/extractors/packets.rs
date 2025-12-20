@@ -3,12 +3,6 @@ use std::collections::HashMap;
 
 use using_protocols::{ extract_using_protocols };
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, serde::Serialize, serde::Deserialize, bincode::Decode, bincode::Encode)]
-pub enum PacketDirection {
-    Serverbound,
-    Clientbound,
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bincode::Decode, bincode::Encode)]
 pub struct RecordType {
     pub name: String,
@@ -39,13 +33,13 @@ pub enum DataType {
     /// java.util.UUID
     #[serde(rename = "uuid")]
     UUID,
-    Record(RecordType),
-    Enum(EnumType),
     Array(Box<DataType>),
     // java.util.List
     List(Box<DataType>),
     // java.util.Optional
     Optional(Box<DataType>),
+    Record(RecordType),
+    Enum(EnumType),
     Other,
     Error { name: String },
 }

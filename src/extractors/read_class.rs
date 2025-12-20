@@ -76,7 +76,7 @@ impl ReadClassExtractor {
         let make_class_ref = |class: &cpool::Class<'_>| -> anyhow::Result<minijvm::ClassRef> {
             let name = pool_str!(class.name)?;
             let descriptor = if name.starts_with('[') {
-                minijvm::TypeDescriptor::parse_complete(name)?
+                name.parse::<minijvm::TypeDescriptor>()?
             } else {
                 minijvm::TypeDescriptor { ty: minijvm::TypeDescriptorKind::Object(minijvm::IdentPath::new(name.replace('/', "."))), array_depth: 0 }
             };
@@ -88,7 +88,7 @@ impl ReadClassExtractor {
             Ok(minijvm::MethodRef {
                 class: make_class_ref(pool!(method_ref.class)?)?,
                 name: minijvm::Ident::new(pool_str!(n_and_t.name)?),
-                descriptor: minijvm::MethodDescriptor::parse_complete(&pool_str!(n_and_t.descriptor)?)?,
+                descriptor: pool_str!(n_and_t.descriptor)?.parse::<minijvm::MethodDescriptor>()?,
             })
         };
 
@@ -97,7 +97,7 @@ impl ReadClassExtractor {
             Ok(minijvm::MethodRef {
                 class: make_class_ref(pool!(interface_method_ref.class)?)?,
                 name: minijvm::Ident::new(pool_str!(n_and_t.name)?),
-                descriptor: minijvm::MethodDescriptor::parse_complete(&pool_str!(n_and_t.descriptor)?)?,
+                descriptor: pool_str!(n_and_t.descriptor)?.parse::<minijvm::MethodDescriptor>()?,
             })
         };
 
@@ -106,7 +106,7 @@ impl ReadClassExtractor {
             Ok(minijvm::FieldRef {
                 class: make_class_ref(pool!(field_ref.class)?)?,
                 name: minijvm::Ident::new(pool_str!(n_and_t.name)?),
-                descriptor: minijvm::TypeDescriptor::parse_complete(pool_str!(n_and_t.descriptor)?)?,
+                descriptor: pool_str!(n_and_t.descriptor)?.parse::<minijvm::TypeDescriptor>()?,
             })
         };
 
@@ -141,7 +141,7 @@ impl ReadClassExtractor {
                 cpool::Item::Double(d) => minijvm::Constant::Double(d.value),
                 cpool::Item::String(s) => minijvm::Constant::String(pool_str!(s.string)?.into()),
                 cpool::Item::Class(c) => minijvm::Constant::Class(make_class_ref(c)?),
-                cpool::Item::MethodType(t) => minijvm::Constant::MethodType(minijvm::MethodDescriptor::parse_complete(&pool_str!(t.descriptor)?)?),
+                cpool::Item::MethodType(t) => minijvm::Constant::MethodType(pool_str!(t.descriptor)?.parse::<minijvm::MethodDescriptor>()?),
                 cpool::Item::MethodHandle(h) => minijvm::Constant::MethodHandle(minijvm::MethodHandle {
                     kind: h.kind.into(),
                     reference: make_method_handle_ref(pool!(h.reference)?)?,
@@ -171,7 +171,7 @@ impl ReadClassExtractor {
             let content = try_or!(attr.read_content(noak_class.pool()); orelse continue);
             if let noak::reader::AttributeContent::Signature(s) = &content {
                 let signature_str = pool_str!(s.signature())?;
-                out_class.signature = minijvm::ClassSignature::parse_complete(signature_str)
+                out_class.signature = signature_str.parse::<minijvm::ClassSignature>()
                     .inspect_err(|e| error!(error = %e, signature = signature_str, "Could not parse class signature"))
                     .ok();
             }
@@ -213,7 +213,7 @@ impl ReadClassExtractor {
                 let content = try_or!(attr.read_content(noak_class.pool()); orelse continue);
                 if let noak::reader::AttributeContent::Signature(s) = &content {
                     let signature_str = pool_str!(s.signature())?;
-                    signature = minijvm::JavaTypeSignature::parse_complete(signature_str)
+                    signature = signature_str.parse::<minijvm::JavaTypeSignature>()
                         .inspect_err(|e| error!(error = %e, signature = signature_str, "Could not parse java type signature"))
                         .ok();
                 }
@@ -225,7 +225,7 @@ impl ReadClassExtractor {
             out_class.fields.push(minijvm::Field {
                 access_flags: minijvm::AccessFlags::from(field.access_flags()),
                 name: minijvm::Ident::new(pool_str!(field.name())?),
-                descriptor: minijvm::TypeDescriptor::parse_complete(pool_str!(field.descriptor())?)?,
+                descriptor: pool_str!(field.descriptor())?.parse::<minijvm::TypeDescriptor>()?,
                 signature,
                 constant_value,
             });
@@ -526,7 +526,7 @@ impl ReadClassExtractor {
                         instructions.push(MiniInstr::InvokeDynamic {
                             call_site: bootstrap_methods[invoke_dyn.bootstrap_method_attr as usize].clone(),
                             name: minijvm::Ident::new(pool_str!(name_and_type.name)?),
-                            descriptor: minijvm::MethodDescriptor::parse_complete(pool_str!(name_and_type.descriptor)?)?,
+                            descriptor: pool_str!(name_and_type.descriptor)?.parse::<minijvm::MethodDescriptor>()?,
                         });
                     },
                     RI::InvokeInterface { index, count } => instructions.push(MiniInstr::Invoke         { kind: minijvm::InvokeKind::Interface { count }, method: make_interface_method_ref(pool!(index)?)? }),
@@ -675,7 +675,7 @@ impl ReadClassExtractor {
                 let content = try_or!(attr.read_content(noak_class.pool()); orelse continue);
                 if let noak::reader::AttributeContent::Signature(s) = &content {
                     let signature_str = pool_str!(s.signature())?;
-                    signature = minijvm::MethodSignature::parse_complete(signature_str)
+                    signature = signature_str.parse::<minijvm::MethodSignature>()
                         .inspect_err(|e| error!(error = %e, signature = signature_str, "Could not parse method signature"))
                         .ok();
                 }
@@ -688,7 +688,7 @@ impl ReadClassExtractor {
             out_class.methods.push(minijvm::Method {
                 access_flags: minijvm::AccessFlags::from(method.access_flags()),
                 name,
-                descriptor: minijvm::MethodDescriptor::parse_complete(pool_str!(method.descriptor())?)?,
+                descriptor: pool_str!(method.descriptor())?.parse::<minijvm::MethodDescriptor>()?,
                 code: found_code,
                 signature,
             });

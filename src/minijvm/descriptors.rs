@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use itertools::Itertools;
 use nom::Finish;
 
@@ -126,12 +128,6 @@ impl TypeDescriptor {
             .map(|(array_depth, ty)| Self { array_depth, ty }).parse(content)
     }
 
-    pub fn parse_complete(content: &str) -> anyhow::Result<Self> {
-        use nom::{ Parser as _, combinator::complete };
-
-        Ok(complete(Self::parse).parse(content).finish().map(|(_, v)| v).map_err(|e| e.cloned())?)
-    }
-
     pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Self {
         Self {
             ty: self.ty.to_mapped(mappings).unwrap_or_else(|| self.ty.clone()),
@@ -181,6 +177,18 @@ impl TypeDescriptor {
     }
 }
 
+impl FromStr for TypeDescriptor {
+    type Err = nom::error::Error<String>;
+
+    /// Should be used instead of [`TypeDescriptor::parse`] will always consume
+    /// the whole input
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use nom::{ Parser as _, combinator::complete };
+
+        Ok(complete(Self::parse).parse(s).finish().map(|(_, v)| v).map_err(|e| e.cloned())?)
+    }
+}
+
 impl std::fmt::Debug for TypeDescriptor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for _ in 0..self.array_depth {
@@ -220,12 +228,6 @@ impl MethodDescriptor {
             .map(|(args, return_type)| Self { args, return_type }).parse(content)
     }
 
-    pub fn parse_complete(content: &str) -> anyhow::Result<Self> {
-        use nom::{ Parser as _, combinator::complete };
-
-        Ok(complete(Self::parse).parse(content).finish().map(|(_, v)| v).map_err(|e| e.cloned())?)
-    }
-
     pub fn to_mapped(&self, mappings: &mappings::Mappings) -> Self {
         Self {
             return_type: self.return_type.to_mapped(mappings),
@@ -251,6 +253,18 @@ impl MethodDescriptor {
             .intersperse(",".to_string())
             .collect::<String>()
         )
+    }
+}
+
+impl FromStr for MethodDescriptor {
+    type Err = nom::error::Error<String>;
+
+    /// Should be used instead of [`MethodDescriptor::parse`] will always consume
+    /// the whole input
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use nom::{ Parser as _, combinator::complete };
+
+        Ok(complete(Self::parse).parse(s).finish().map(|(_, v)| v).map_err(|e| e.cloned())?)
     }
 }
 
