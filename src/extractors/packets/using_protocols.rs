@@ -100,7 +100,10 @@ impl extractors::ExtractorKind for JavaDataTypeExtractor {
 
         let class_type = match ref_type {
             RefSign::Class(class_type) => class_type,
-            RefSign::TypeVariable(_) => return Ok(DataType::Other),
+            RefSign::TypeVariable(v) => return Ok(DataType::Other {
+                name: format!("typevar({v})"),
+                type_args: vec![],
+            }),
             RefSign::Array(array) => return Ok(DataType::Array({
                 let element = Box::pin(manager.extract(Self {
                     signature: (*array.ty).clone(),
@@ -111,34 +114,43 @@ impl extractors::ExtractorKind for JavaDataTypeExtractor {
 
         let class_name = class_type.class_name();
 
+        // Convert all type arguments to DataTypes
+        let type_args: Vec<DataType> = {
+            let mut type_args = vec![];
+            for inner_ty in &class_type.class.type_arguments {
+                let inner_dt = match inner_ty {
+                    minijvm::signatures::TypeArgument::Type { wildcard_indicator: None, ty } => {
+                        (*Box::pin(manager.extract(Self {
+                            signature: TypeSign::Reference(ty.clone()),
+                        })).await?).clone()
+                    },
+                    type_parameter => {
+                        warn!(?type_parameter, "Unsupported wildcard inside Optional/List");
+                        DataType::Other { name: "*".into(), type_args: vec![] }
+                    },
+                };
+                type_args.push(inner_dt)
+            }
+            type_args
+        };
+
         match class_name.as_str() {
             "java.lang.String" => return Ok(DataType::String),
             "java.lang.Integer" => return Ok(DataType::Int),
             "java.util.UUID" => return Ok(DataType::UUID),
             "java.util.Optional" | "java.util.List" => {
-                let inner_ty = class_type.class.type_arguments.first()
+                let inner_dt = type_args.first()
                     .ok_or_else(|| anyhow!("java.util.Optional/List without any type argument?"))?;
-                let inner_dt = match inner_ty {
-                    minijvm::signatures::TypeArgument::Type { wildcard_indicator: None, ty } => {
-                        Box::new((*Box::pin(manager.extract(Self {
-                            signature: TypeSign::Reference(ty.clone()),
-                        })).await?).clone())
-                    },
-                    type_parameter => {
-                        warn!(?type_parameter, "Unsupported wildcard inside Optional/List");
-                        Box::new(DataType::Other)
-                    },
-                };
                 return Ok(match class_name.as_str() {
-                    "java.util.Optional" => DataType::Optional(inner_dt),
-                    "java.util.List" => DataType::List(inner_dt),
+                    "java.util.Optional" => DataType::Optional(Box::new(inner_dt.clone())),
+                    "java.util.List" => DataType::List(Box::new(inner_dt.clone())),
                     _ => unreachable!(),
                 });
             },
-            s if s.starts_with("net.minecraft") => (),
-            _ => {
+            s if s.starts_with("net.minecraft") => (/* We can read these classes */),
+            s => {
                 warn!(%class_name, "Unknown ty");
-                return Ok(DataType::Other);
+                return Ok(DataType::Other { name: s.into(), type_args });
             },
         }
 

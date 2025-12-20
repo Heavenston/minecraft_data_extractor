@@ -40,7 +40,10 @@ pub enum DataType {
     Optional(Box<DataType>),
     Record(RecordType),
     Enum(EnumType),
-    Other,
+    Other {
+        name: String,
+        type_args: Vec<DataType>,
+    },
     Error { name: String },
 }
 
