@@ -47,6 +47,7 @@ pub struct ReadClassExtractor {
 }
 
 impl ReadClassExtractor {
+    #[tracing::instrument(skip(zip_file))]
     fn read_class(zip_file: &rc_zip_sync::ArchiveHandle<'_, std::fs::File>, class: &str) -> anyhow::Result<minijvm::Class> {
         use noak::reader::cpool as cpool;
         use noak::reader::attributes::{ RawInstruction as RI, Index as CodeIndex, ArrayType as AT };
@@ -203,14 +204,18 @@ impl ReadClassExtractor {
         ;
 
         for field in noak_class.fields() {
-            let _span = tracing::trace_span!("Reading a method");
             let field = try_or!(field; orelse continue);
+            let field_name = pool_str!(field.name())?;
+            let _span = tracing::debug_span!("field", name = field_name).entered();
 
             let mut signature = None;
             let mut constant_value = None;
             for attr in field.attributes() {
                 let attr = try_or!(attr; orelse continue);
+                let attr_name = pool_str!(attr.name())?;
+                let _span = tracing::debug_span!("attr", name = attr_name).entered();
                 let content = try_or!(attr.read_content(noak_class.pool()); orelse continue);
+
                 if let noak::reader::AttributeContent::Signature(s) = &content {
                     let signature_str = pool_str!(s.signature())?;
                     signature = signature_str.parse::<minijvm::JavaTypeSignature>()
@@ -224,7 +229,7 @@ impl ReadClassExtractor {
 
             out_class.fields.push(minijvm::Field {
                 access_flags: minijvm::AccessFlags::from(field.access_flags()),
-                name: minijvm::Ident::new(pool_str!(field.name())?),
+                name: minijvm::Ident::new(field_name),
                 descriptor: pool_str!(field.descriptor())?.parse::<minijvm::TypeDescriptor>()?,
                 signature,
                 constant_value,
@@ -663,16 +668,27 @@ impl ReadClassExtractor {
         };
 
         for method in noak_class.methods() {
-            tracing::trace_span!("Reading a method");
             let method = try_or!(method; orelse continue);
+            let method_name = pool_str!(method.name())?;
+            let _span = tracing::debug_span!("method", name = method_name).entered();
 
             let mut found_code = None;
             let mut signature = None;
 
             for attr in method.attributes() {
-                tracing::trace_span!("Reading a method's attr");
                 let attr = try_or!(attr; orelse continue);
+                let attr_name = pool_str!(attr.name())?;
+                let _span = tracing::debug_span!("attr", name = attr_name).entered();
+
+                // NOTE: Obfuscation removes the contents of this attr
+                // TODO: Latest minecraft versions do provide it, so maybe we could
+                // read it though i am not sure it's of any use
+                if attr_name == "MethodParameters" {
+                    continue;
+                }
+
                 let content = try_or!(attr.read_content(noak_class.pool()); orelse continue);
+
                 if let noak::reader::AttributeContent::Signature(s) = &content {
                     let signature_str = pool_str!(s.signature())?;
                     signature = signature_str.parse::<minijvm::MethodSignature>()
@@ -684,10 +700,9 @@ impl ReadClassExtractor {
                 }
             }
 
-            let name = minijvm::Ident::new(pool_str!(method.name())?);
             out_class.methods.push(minijvm::Method {
                 access_flags: minijvm::AccessFlags::from(method.access_flags()),
-                name,
+                name: minijvm::Ident::new(method_name),
                 descriptor: pool_str!(method.descriptor())?.parse::<minijvm::MethodDescriptor>()?,
                 code: found_code,
                 signature,

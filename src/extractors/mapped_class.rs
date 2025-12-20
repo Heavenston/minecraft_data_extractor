@@ -92,7 +92,7 @@ pub struct MappedClassExtractor {
 }
 
 impl MappedClassExtractor {
-    #[tracing::instrument(skip(mappings, _class_map))]
+    #[tracing::instrument(level = "debug", skip(mappings, _class_map))]
     fn map_instruction(mappings: &mappings::Mappings, _class_map: &mappings::Class, instruction: &minijvm::Instruction) -> minijvm::Instruction {
         use minijvm::Instruction as Instr;
 

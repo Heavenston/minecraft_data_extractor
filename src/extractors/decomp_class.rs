@@ -4,7 +4,7 @@ use rv::RefVisitor;
 
 use std::collections::HashMap;
 use anyhow::anyhow;
-use tracing::{ info_span, warn, error };
+use tracing::{ debug_span, error, warn };
 use itertools::Itertools;
 
 struct LambdaExtractor;
@@ -819,7 +819,7 @@ impl DecompClassExtractor {
             super_class: class.super_class.clone(),
             enum_variants: Vec::new(),
             methods: class.methods.iter().map(|method| -> anyhow::Result<decomped::Method> {
-                let _span = info_span!("decomp_method", method_name = %method.name).entered();
+                let _span = debug_span!("decomp_method", method_name = %method.name).entered();
 
                 Ok(decomped::Method {
                     name: method.name.clone(),

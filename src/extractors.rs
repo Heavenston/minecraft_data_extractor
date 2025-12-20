@@ -64,7 +64,7 @@ mod manager {
     use anyhow::bail;
     use sha2::Digest;
     use tokio::fs;
-    use tracing::{ trace, trace_span, warn, Instrument };
+    use tracing::{ debug_span, trace, warn, Instrument };
 
     use crate::{ version_client_json::VersionClientJson, AppState };
     use super::*;
@@ -233,8 +233,8 @@ mod manager {
             let output = if let Some(cached_extraction) = cached_extraction {
                 cached_extraction
             } else {
-                let span = trace_span!("Running extractor", extractor_name, ?extractor, version_id = self.version.id);
-                let simple_span = trace_span!("Running extractor", extractor_name, version_id = self.version.id);
+                let span = debug_span!("Running extractor", extractor_name, ?extractor, version_id = self.version.id);
+                let simple_span = debug_span!("Running extractor", extractor_name, version_id = self.version.id);
                 span.clone().in_scope(|| trace!("Started extractor"));
                 let output = Arc::new(extractor.extract(self).instrument(simple_span).await?);
                 span.in_scope(|| trace!("Finished running extractor"));
