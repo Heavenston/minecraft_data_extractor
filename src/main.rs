@@ -130,6 +130,10 @@ pub(crate) struct Args {
     /// If specified, will decompile the given class and print the result
     #[arg(long)]
     decomp_class: Option<String>,
+
+    /// If specified, add more information to each log
+    #[arg(short = 'e', long)]
+    verbose: bool,
 }
 
 pub(crate) struct AppState {
@@ -278,8 +282,10 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     tracing_subscriber::fmt()
-        .with_file(true)
-        .with_line_number(true)
+        .without_time()
+        .with_file(args.verbose)
+        .with_line_number(args.verbose)
+        .with_target(args.verbose)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
