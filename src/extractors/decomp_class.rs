@@ -254,7 +254,7 @@ fn decomp_block_code(
 
     let mut statements = Vec::<decomped::Statement>::new();
 
-    let mut instructions = instructions.iter();
+    let mut instructions = instructions.iter().peekable();
     while let Some(instr) = instructions.next() {
         match instr {
             Instr::Noop => {}
@@ -367,29 +367,27 @@ fn decomp_block_code(
                     _ => Some(Box::new(pop_stack(stack)?)),
                 };
 
-                // TODO: What did this do?
-                // if method.name.0 == "<init>" {
-                //     if let Some(obj) = object {
-                //         if let decomped::Expression::LoadTemp { index } = *obj {
-                //             if let Some(stmt_idx) = statements.iter().rposition(|s| {
-                //                 matches!(s, decomped::Statement::StoreTemp { index: i, .. } if *i == index)
-                //             }) {
-                //                 if let decomped::Statement::StoreTemp { value: decomped::Expression::New { ref class, args: ref new_args }, .. } = statements[stmt_idx] {
-                //                     if new_args.is_empty() {
-                //                         let new_expr = decomped::Expression::New { class: class.clone(), args };
-                //                         statements[stmt_idx] = decomped::Statement::StoreTemp { index, value: new_expr };
-                //                         *pc += 1;
-                //                         continue;
-                //                     }
-                //                 }
-                //             }
-                //         }
-                //         let expr = decomped::Expression::Invoke { kind: kind.clone(), method: method.clone(), object: Some(obj), args };
-                //         statements.push(decomped::Statement::Expression { expr });
-                //     }
-                //     *pc += 1;
-                //     continue;
-                // }
+                // Merge this <init> call into it's corresponding `new`
+                if method.name.0 == "<init>" {
+                    if let Some(obj) = object {
+                        if let decomped::Expression::LoadTemp { index } = *obj {
+                            if let Some(stmt_idx) = statements.iter().rposition(|s| {
+                                matches!(s, decomped::Statement::StoreTemp { index: i, .. } if *i == index)
+                            }) {
+                                if let decomped::Statement::StoreTemp { value: decomped::Expression::New { ref class, args: ref new_args }, .. } = statements[stmt_idx] {
+                                    if new_args.is_empty() {
+                                        let new_expr = decomped::Expression::New { class: class.clone(), args };
+                                        statements[stmt_idx] = decomped::Statement::StoreTemp { index, value: new_expr };
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        let expr = decomped::Expression::Invoke { kind: kind.clone(), method: method.clone(), object: Some(obj), args };
+                        statements.push(decomped::Statement::Expression { expr });
+                    }
+                    continue;
+                }
 
                 let expr = decomped::Expression::Invoke { kind: kind.clone(), method: method.clone(), object, args };
 
@@ -526,7 +524,7 @@ fn construct_cfg<'a>(instructions: &'a [minijvm::Instruction]) -> anyhow::Result
     Ok(cfg)
 }
 
-fn decomp_block(cfg: &ControlFlowGraph, block_index: usize) -> anyhow::Result<Vec<decomped::Statement>> {
+fn decomp_block(cfg: &ControlFlowGraph, block_index: usize) -> anyhow::Result<(Vec<decomped::Statement>, Option::<usize>)> {
     let block = &cfg.blocks[block_index];
 
     let mut next_temp = 0u16;
@@ -536,26 +534,53 @@ fn decomp_block(cfg: &ControlFlowGraph, block_index: usize) -> anyhow::Result<Ve
 
     if let Some(goto) = &block.cond_goto {
         let cond_expression = convert_condition_to_expression(goto.cond, &mut stack)?;
-        statements.push(decomped::Statement::If {
-            condition: cond_expression,
-            then_branch: decomp_block(cfg, goto.block_idx)?,
-            else_branch: block.next_block_idx
-                .map(|block_idx| decomp_block(cfg, block_idx))
+        ensure!(stack.is_empty(), "Non-empty stack after block");
+        let (mut then_branch, then_next) = decomp_block(cfg, goto.block_idx)?;
+
+        if block.next_block_idx == then_next {
+            statements.push(decomped::Statement::If {
+                condition: cond_expression,
+                then_branch,
+                else_branch: vec![],
+            });
+            Ok((statements, then_next))
+        }
+        else {
+            if let Some(then_next) = then_next {
+                then_branch.extend(decomp_block_continued(cfg, then_next)?);
+            }
+            let else_branch = block.next_block_idx
+                .map(|block_idx| decomp_block_continued(cfg, block_idx))
                 .transpose()?
-                .unwrap_or_default(),
-        });
+                .unwrap_or_default();
+
+            statements.push(decomped::Statement::If {
+                condition: cond_expression,
+                then_branch,
+                else_branch,
+            });
+
+            Ok((statements, None))
+        }
     }
-    else if let Some(next) = block.next_block_idx {
-        statements.extend(decomp_block(cfg, next)?);
+    else {
+        Ok((statements, block.next_block_idx))
     }
 
+}
+
+fn decomp_block_continued(cfg: &ControlFlowGraph, block_index: usize) -> anyhow::Result<Vec<decomped::Statement>> {
+    let (mut statements, next) = decomp_block(cfg, block_index)?;
+    if let Some(next) = next {
+        statements.extend(decomp_block_continued(cfg, next)?);
+    }
     Ok(statements)
 }
 
 fn decomp_code(code: &minijvm::Code) -> anyhow::Result<Vec<decomped::Statement>> {
     let cfg = construct_cfg(&code.instructions)?;
 
-    decomp_block(&cfg, 0)
+    decomp_block_continued(&cfg, 0)
 }
 
 impl DecompClassExtractor {
