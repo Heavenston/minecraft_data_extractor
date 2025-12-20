@@ -20,6 +20,17 @@ use tracing::{debug, error, info, warn};
 
 pub const CODE_HASH: &str = env!("CODE_HASH");
 
+fn ordered_map<S, K: Ord + serde::Serialize, V: serde::Serialize>(
+    value: &std::collections::HashMap<K, V>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let ordered: std::collections::BTreeMap<_, _> = value.iter().collect();
+    serde::Serialize::serialize(&ordered, serializer)
+}
+
 /// Like [`tokio::task::spawn_blocking`] but uses rayon instead
 pub async fn spawn_cpu_bound<T: Send + 'static>(f: impl 'static + Send + FnOnce() -> T) -> anyhow::Result<T> {
     let (sender, receiver) = tokio::sync::oneshot::channel();

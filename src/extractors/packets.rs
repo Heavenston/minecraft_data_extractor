@@ -12,6 +12,7 @@ pub enum PacketDirection {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bincode::Decode, bincode::Encode)]
 pub struct RecordType {
     pub name: String,
+    #[serde(serialize_with = "crate::ordered_map")]
     pub fields: HashMap<String, DataType>,
 }
 
