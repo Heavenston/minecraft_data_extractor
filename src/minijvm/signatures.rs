@@ -19,14 +19,16 @@ use crate::mappings;
 pub struct Identifier(String);
 
 impl Identifier {
+    const FORBIDDEN_CHARS: &str = ".;[/<>:";
+
     pub fn new(value: impl Into<String>) -> Self {
         let str = value.into();
-        debug_assert!(!str.chars().any(|c| ".;[/<>".contains(c)), "Invalid identifier");
+        debug_assert!(!str.chars().any(|c| Self::FORBIDDEN_CHARS.contains(c)), "Invalid identifier");
         Self(str)
     }
 
     pub fn parse(content: &str) -> nom::IResult<&str, Self> {
-        recognize(many1_count(none_of(".;[/<>")))
+        recognize(many1_count(none_of(Self::FORBIDDEN_CHARS)))
             .map(String::from).map(Self)
             .parse(content)
     }
@@ -534,5 +536,127 @@ impl ArrayTypeSignature {
         Self {
             ty: Box::new(self.ty.to_mapped(mappings)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_identifier() {
+        let (rest, id) = Identifier::parse("MyClass;").unwrap();
+        assert_eq!(&*id, "MyClass");
+        assert_eq!(rest, ";");
+    }
+
+    #[test]
+    fn test_base_type_signature() {
+        assert_eq!(BaseTypeSignature::parse("I").unwrap().1, BaseTypeSignature::Int);
+        assert_eq!(BaseTypeSignature::parse("Z").unwrap().1, BaseTypeSignature::Boolean);
+        assert_eq!(BaseTypeSignature::parse("J").unwrap().1, BaseTypeSignature::Long);
+        assert_eq!(BaseTypeSignature::parse("D").unwrap().1, BaseTypeSignature::Double);
+    }
+
+    #[test]
+    fn test_class_type_signature_simple() {
+        let (_, sig) = ClassTypeSignature::parse("Ljava/lang/String;").unwrap();
+        assert_eq!(sig.package.len(), 2);
+        assert_eq!(&*sig.class.name, "String");
+        assert_eq!(sig.class_name(), "java.lang.String");
+    }
+
+    #[test]
+    fn test_class_type_signature_generic() {
+        let (_, sig) = ClassTypeSignature::parse("Ljava/util/List<Ljava/lang/String;>;").unwrap();
+        assert_eq!(sig.class_name(), "java.util.List");
+        assert_eq!(sig.class.type_arguments.len(), 1);
+    }
+
+    #[test]
+    fn test_class_type_signature_nested() {
+        let (_, sig) = ClassTypeSignature::parse("Ljava/util/Map<TK;TV;>.Entry<TK;TV;>;").unwrap();
+        assert_eq!(sig.class_name(), "java.util.Map");
+        assert_eq!(sig.suffix.len(), 1);
+        assert_eq!(&*sig.suffix[0].name, "Entry");
+    }
+
+    #[test]
+    fn test_array_type_signature() {
+        let (_, sig) = ArrayTypeSignature::parse("[I").unwrap();
+        assert!(sig.ty.is_base());
+
+        let (_, sig) = ArrayTypeSignature::parse("[[Ljava/lang/String;").unwrap();
+        assert!(sig.ty.is_reference());
+    }
+
+    #[test]
+    fn test_wildcard_type_argument() {
+        let (_, arg) = TypeArgument::parse("*").unwrap();
+        assert!(matches!(arg, TypeArgument::Wildcard));
+
+        let (_, arg) = TypeArgument::parse("+Ljava/lang/Number;").unwrap();
+        assert!(matches!(arg, TypeArgument::Type { wildcard_indicator: Some(WildcardIndicator::Plus), .. }));
+
+        let (_, arg) = TypeArgument::parse("-Ljava/lang/Object;").unwrap();
+        assert!(matches!(arg, TypeArgument::Type { wildcard_indicator: Some(WildcardIndicator::Minus), .. }));
+    }
+
+    #[test]
+    fn test_method_signature_simple() {
+        let sig: MethodSignature = "(II)I".parse().unwrap();
+        assert_eq!(sig.arguments.len(), 2);
+        assert!(sig.result.is_type());
+        assert!(sig.type_parameters.is_empty());
+    }
+
+    #[test]
+    fn test_method_signature_void() {
+        let sig: MethodSignature = "()V".parse().unwrap();
+        assert!(sig.arguments.is_empty());
+        assert!(sig.result.is_void());
+    }
+
+    #[test]
+    fn test_method_signature_generic() {
+        let sig: MethodSignature = "<T:Ljava/lang/Object;>(TT;)TT;".parse().unwrap();
+        assert_eq!(sig.type_parameters.len(), 1);
+        assert_eq!(&*sig.type_parameters[0].name, "T");
+    }
+
+    #[test]
+    fn test_method_signature_throws() {
+        let sig: MethodSignature = "()V^Ljava/io/IOException;".parse().unwrap();
+        assert_eq!(sig.throws_signature.len(), 1);
+        assert!(sig.throws_signature[0].is_class());
+    }
+
+    #[test]
+    fn test_class_signature() {
+        let sig: ClassSignature = "Ljava/lang/Object;".parse().unwrap();
+        assert!(sig.type_parameters.is_empty());
+        assert_eq!(sig.superclass.class_name(), "java.lang.Object");
+    }
+
+    #[test]
+    fn test_class_signature_generic() {
+        let sig: ClassSignature = "<T:Ljava/lang/Object;>Ljava/lang/Object;Ljava/lang/Comparable<TT;>;".parse().unwrap();
+        assert_eq!(sig.type_parameters.len(), 1);
+        assert_eq!(sig.superinterfaces.len(), 1);
+    }
+
+    #[test]
+    fn test_type_parameter_multiple_bounds() {
+        let (_, tp) = TypeParameter::parse("T:Ljava/lang/Object;:Ljava/io/Serializable;").unwrap();
+        assert_eq!(&*tp.name, "T");
+        assert!(tp.class_bound.is_some());
+        assert_eq!(tp.interface_bounds.len(), 1);
+    }
+
+    #[test]
+    fn test_display_roundtrip() {
+        let input = "Ljava/util/Map<Ljava/lang/String;Ljava/lang/Integer;>;";
+        let (_, sig) = ClassTypeSignature::parse(input).unwrap();
+        assert_eq!(sig.to_string(), input);
     }
 }
