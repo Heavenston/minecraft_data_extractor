@@ -2,8 +2,8 @@ use crate::{ mappings, minijvm::{ self, decomped::{ self, visitor::{ mut_visitor
 use mv::MutVisitor;
 use rv::RefVisitor;
 
-use std::collections::HashMap;
-use anyhow::anyhow;
+use std::{collections::{HashMap, HashSet}, ops::Range};
+use anyhow::{anyhow, bail, ensure};
 use tracing::{ debug_span, error, warn };
 use itertools::Itertools;
 
@@ -122,7 +122,6 @@ struct TempSimplifier;
 
 impl TempSimplifier {
     fn simplify_block(&mut self, statements: &mut Vec<decomped::Statement>) -> anyhow::Result<()> {
-        SwitchExpressionRewriter.rewrite_block(statements)?;
         simplify_temps(statements)?;
         for stmt in statements {
             self.visit_statement(stmt)?;
@@ -151,6 +150,31 @@ impl mv::MutVisitor for TempSimplifier {
 
         Ok(())
     }
+}
+
+#[derive(Debug)]
+struct CFGGoto<'a> {
+    cond: &'a minijvm::GotoCondition,
+    block_idx: usize,
+}
+
+#[derive(Debug)]
+struct CFGBlock<'a> {
+    start_idx: usize,
+    instructions: &'a [minijvm::Instruction],
+    cond_goto: Option<CFGGoto<'a>>,
+    next_block_idx: Option<usize>,
+}
+
+impl CFGBlock<'_> {
+    pub fn range(&self) -> Range<usize> {
+        self.start_idx..self.start_idx + self.instructions.len()
+    }
+}
+
+#[derive(Debug)]
+struct ControlFlowGraph<'a> {
+    blocks: Vec<CFGBlock<'a>>,
 }
 
 #[derive(Debug, bincode::Encode)]
@@ -186,6 +210,28 @@ fn convert_constant(constant: &minijvm::Constant) -> decomped::Constant {
     }
 }
 
+fn convert_condition_to_expression(cond: &minijvm::GotoCondition, stack: &mut Vec<decomped::Expression>) -> anyhow::Result<decomped::Expression> {
+    let rhs_const = match cond.operand {
+        minijvm::IfOperand::Zero => Some(decomped::Constant::Int(0)),
+        minijvm::IfOperand::Null => Some(decomped::Constant::Null),
+        _ => None,
+    };
+
+    let (lhs, rhs) = if let Some(c) = rhs_const {
+        (pop_stack(stack)?, decomped::Expression::Constant { value: c })
+    } else {
+        let r = pop_stack(stack)?;
+        let l = pop_stack(stack)?;
+        (l, r)
+    };
+
+    Ok(decomped::Expression::Compare {
+        cmp: cond.cmp.clone(),
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    })
+}
+
 fn pop_args(stack: &mut Vec<decomped::Expression>, count: usize) -> anyhow::Result<Vec<decomped::Expression>> {
     if stack.len() < count {
         return Err(anyhow!("Not enough expressions on stack for arguments"));
@@ -199,101 +245,8 @@ fn pop_stack(stack: &mut Vec<decomped::Expression>) -> anyhow::Result<decomped::
     stack.pop().ok_or_else(|| anyhow!("Missing expression in stack"))
 }
 
-struct SwitchExpressionRewriter;
-
-impl SwitchExpressionRewriter {
-    fn body_to_expr(body: &[decomped::Statement], ret_idx: u16) -> Option<decomped::Expression> {
-        match body {
-            [decomped::Statement::StoreTemp { index, value }] if *index == ret_idx => Some(value.clone()),
-            [decomped::Statement::Expression { expr: decomped::Expression::Throw { value } }] => {
-                Some(decomped::Expression::Throw { value: Box::new(value.as_ref().clone()) })
-            }
-            [
-                decomped::Statement::StoreTemp { index, value: stored },
-                decomped::Statement::Expression { expr: decomped::Expression::Throw { value: thrown } },
-            ] => match thrown.as_ref() {
-                decomped::Expression::LoadTemp { index: load_idx } if *index == *load_idx => {
-                    Some(decomped::Expression::Throw { value: Box::new(stored.clone()) })
-                }
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn rewrite_block(&self, statements: &mut Vec<decomped::Statement>) -> anyhow::Result<()> {
-        let mut idx = 0;
-        while idx + 1 < statements.len() {
-            if let (
-                decomped::Statement::Switch { value, cases, default },
-                decomped::Statement::Return { value: Some((ret_kind, decomped::Expression::LoadTemp { index: ret_idx })) },
-            ) = (&statements[idx], &statements[idx + 1]) {
-                let mut cases_expr = Vec::new();
-                let mut default_expr = None;
-                let mut convertible = true;
-
-                for case in cases {
-                    if let Some(expr) = Self::body_to_expr(&case.body, *ret_idx) {
-                        cases_expr.push(decomped::SwitchExprCase { values: case.values.clone(), value: expr });
-                    } else {
-                        convertible = false;
-                        break;
-                    }
-                }
-
-                if convertible {
-                    if let Some(expr) = Self::body_to_expr(default, *ret_idx) {
-                        default_expr = Some(expr);
-                    } else {
-                        convertible = false;
-                    }
-                }
-
-                if convertible {
-                    cases_expr.sort_by_key(|c| c.values.first().copied().unwrap_or(i32::MAX));
-                    let new_return = decomped::Statement::Return {
-                        value: Some((
-                            ret_kind.clone(),
-                            decomped::Expression::Switch {
-                                value: Box::new(value.clone()),
-                                cases: cases_expr,
-                                default: Box::new(default_expr.unwrap()),
-                            },
-                        )),
-                    };
-                    statements[idx] = new_return;
-                    statements.remove(idx + 1);
-                    continue;
-                }
-            }
-
-            if let Some(branches) = match &mut statements[idx] {
-                decomped::Statement::If { then_branch, else_branch, .. } => Some(vec![then_branch, else_branch]),
-                decomped::Statement::While { body, .. } => Some(vec![body]),
-                decomped::Statement::Switch { cases, default, .. } => {
-                    let mut out = cases.iter_mut().map(|c| &mut c.body).collect::<Vec<_>>();
-                    out.push(default);
-                    Some(out)
-                }
-                _ => None,
-            } {
-                for branch in branches {
-                    self.rewrite_block(branch)?;
-                }
-            }
-
-            idx += 1;
-        }
-
-        Ok(())
-    }
-}
-
-
-fn decomp_block(
-    code: &minijvm::Code,
-    pc: &mut usize,
-    end: usize,
+fn decomp_block_code(
+    instructions: &[minijvm::Instruction],
     stack: &mut Vec<decomped::Expression>,
     next_temp: &mut u16,
 ) -> anyhow::Result<Vec<decomped::Statement>> {
@@ -301,105 +254,8 @@ fn decomp_block(
 
     let mut statements = Vec::<decomped::Statement>::new();
 
-    while *pc < end {
-        let instr = &code.instructions[*pc];
-
-        if let Instr::Goto { offset, cond } = instr {
-            let target = *offset as usize;
-
-            if let Some(cond) = cond {
-                if target <= *pc {
-                    warn!("Encountered backward conditional goto at pc={}", pc);
-                    *pc += 1;
-                    continue;
-                }
-
-                let rhs_const = match cond.operand {
-                    minijvm::IfOperand::Zero => Some(decomped::Constant::Int(0)),
-                    minijvm::IfOperand::Null => Some(decomped::Constant::Null),
-                    _ => None,
-                };
-
-                let (lhs, rhs) = if let Some(c) = rhs_const {
-                    (pop_stack(stack)?, decomped::Expression::Constant { value: c })
-                } else {
-                    let r = pop_stack(stack)?;
-                    let l = pop_stack(stack)?;
-                    (l, r)
-                };
-
-                let condition = decomped::Expression::Compare {
-                    cmp: cond.cmp.clone(),
-                    lhs: Box::new(lhs),
-                    rhs: Box::new(rhs),
-                };
-
-                let then_start = *pc + 1;
-
-                let then_goto = (then_start..target)
-                    .filter_map(|i| {
-                        if let Instr::Goto { offset, cond: None } = &code.instructions[i] {
-                            let dest = *offset as usize;
-                            if dest >= target {
-                                Some((i, dest))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                    .last();
-
-                if let Some((then_goto_idx, end_idx)) = then_goto {
-                    let mut then_pc = then_start;
-                    let mut then_stack = stack.clone();
-                    let then_branch = decomp_block(code, &mut then_pc, then_goto_idx, &mut then_stack, next_temp)?;
-
-                    let mut else_pc = target;
-                    let mut else_stack = stack.clone();
-                    let else_branch = decomp_block(code, &mut else_pc, end_idx, &mut else_stack, next_temp)?;
-
-                    let is_ternary = then_stack.len() == stack.len() + 1
-                        && else_stack.len() == stack.len() + 1
-                        && then_branch.is_empty()
-                        && else_branch.is_empty();
-
-                    if is_ternary {
-                        let then_value = then_stack.pop().unwrap();
-                        let else_value = else_stack.pop().unwrap();
-                        stack.push(decomped::Expression::Ternary {
-                            condition: Box::new(condition),
-                            then_value: Box::new(then_value),
-                            else_value: Box::new(else_value),
-                        });
-                    } else {
-                        if then_stack.len() == stack.len() {
-                            *stack = then_stack;
-                        }
-                        statements.push(decomped::Statement::If { condition, then_branch, else_branch });
-                    }
-
-                    *pc = end_idx;
-                } else {
-                    let mut then_pc = then_start;
-                    let mut then_stack = stack.clone();
-                    let then_branch = decomp_block(code, &mut then_pc, target, &mut then_stack, next_temp)?;
-
-                    if then_stack.len() == stack.len() {
-                        *stack = then_stack;
-                    }
-
-                    statements.push(decomped::Statement::If { condition, then_branch, else_branch: Vec::new() });
-                    *pc = target;
-                }
-                continue;
-            } else {
-                warn!(offset, "Unstructured goto encountered in decompilation");
-                break;
-            }
-        }
-
+    let mut instructions = instructions.iter();
+    while let Some(instr) = instructions.next() {
         match instr {
             Instr::Noop => {}
             Instr::Dup { count, depth } => {
@@ -422,14 +278,17 @@ fn decomp_block(
                 stack.extend(to_dup);
             }
             Instr::Pop { count } => {
+                let start = statements.len();
                 for _ in 0..*count {
                     statements.push(decomped::Statement::Expression { expr: pop_stack(stack)? });
                 }
+                let end = statements.len();
+                statements[start..end].reverse();
             }
             Instr::Swap => {
                 let len = stack.len();
                 if len < 2 {
-                    return Err(anyhow!("Not enough values on stack for swap"));
+                    bail!("Not enough values on stack for swap");
                 }
                 stack.swap(len - 1, len - 2);
             }
@@ -508,28 +367,29 @@ fn decomp_block(
                     _ => Some(Box::new(pop_stack(stack)?)),
                 };
 
-                if method.name.0 == "<init>" {
-                    if let Some(obj) = object {
-                        if let decomped::Expression::LoadTemp { index } = *obj {
-                            if let Some(stmt_idx) = statements.iter().rposition(|s| {
-                                matches!(s, decomped::Statement::StoreTemp { index: i, .. } if *i == index)
-                            }) {
-                                if let decomped::Statement::StoreTemp { value: decomped::Expression::New { ref class, args: ref new_args }, .. } = statements[stmt_idx] {
-                                    if new_args.is_empty() {
-                                        let new_expr = decomped::Expression::New { class: class.clone(), args };
-                                        statements[stmt_idx] = decomped::Statement::StoreTemp { index, value: new_expr };
-                                        *pc += 1;
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                        let expr = decomped::Expression::Invoke { kind: kind.clone(), method: method.clone(), object: Some(obj), args };
-                        statements.push(decomped::Statement::Expression { expr });
-                    }
-                    *pc += 1;
-                    continue;
-                }
+                // TODO: What did this do?
+                // if method.name.0 == "<init>" {
+                //     if let Some(obj) = object {
+                //         if let decomped::Expression::LoadTemp { index } = *obj {
+                //             if let Some(stmt_idx) = statements.iter().rposition(|s| {
+                //                 matches!(s, decomped::Statement::StoreTemp { index: i, .. } if *i == index)
+                //             }) {
+                //                 if let decomped::Statement::StoreTemp { value: decomped::Expression::New { ref class, args: ref new_args }, .. } = statements[stmt_idx] {
+                //                     if new_args.is_empty() {
+                //                         let new_expr = decomped::Expression::New { class: class.clone(), args };
+                //                         statements[stmt_idx] = decomped::Statement::StoreTemp { index, value: new_expr };
+                //                         *pc += 1;
+                //                         continue;
+                //                     }
+                //                 }
+                //             }
+                //         }
+                //         let expr = decomped::Expression::Invoke { kind: kind.clone(), method: method.clone(), object: Some(obj), args };
+                //         statements.push(decomped::Statement::Expression { expr });
+                //     }
+                //     *pc += 1;
+                //     continue;
+                // }
 
                 let expr = decomped::Expression::Invoke { kind: kind.clone(), method: method.clone(), object, args };
 
@@ -565,206 +425,8 @@ fn decomp_block(
                 let object = if *is_static { None } else { Some(Box::new(pop_stack(stack)?)) };
                 statements.push(decomped::Statement::PutField { is_static: *is_static, field: field.clone(), object, value });
             }
-            Instr::LookupSwitch { default_target, cases } |
-            Instr::TableSwitch { default_target, cases } => {
-                let switch_value = pop_stack(stack)?;
-
-                if *default_target < 0 {
-                    warn!(target = default_target, "LookupSwitch has negative default target");
-                    *pc += 1;
-                    continue;
-                }
-
-                let default_idx = *default_target as usize;
-
-                let mut targets: HashMap<usize, (Vec<i32>, bool)> = HashMap::new();
-                targets.insert(default_idx, (Vec::new(), true));
-                for case in cases {
-                    if case.target < 0 {
-                        warn!(target = case.target, value = case.value, "LookupSwitch case target is negative");
-                        continue;
-                    }
-                    let entry = targets.entry(case.target as usize).or_insert_with(|| (Vec::new(), case.target as usize == default_idx));
-                    entry.0.push(case.value);
-                }
-
-                let mut branches: Vec<_> = targets.into_iter()
-                    .map(|(start, (values, is_default))| (start, values, is_default))
-                    .collect();
-                branches.sort_by_key(|(start, _, _)| *start);
-
-                if branches.is_empty() {
-                    warn!("Switch instruction has no valid branches");
-                    *pc += 1;
-                    continue;
-                }
-
-                let min_start = branches.first().map(|(s, _, _)| *s).unwrap();
-                let max_start = branches.last().map(|(s, _, _)| *s).unwrap();
-
-                // Try to find a common "break" target for the switch: an
-                // unconditional goto that jumps past all branch entry points.
-                // This is used as the end of the structured switch so that
-                // shared tail code (like a final `return`) is kept outside
-                // the default branch body.
-                let mut switch_end = code.instructions.len();
-                for idx in min_start..code.instructions.len() {
-                    if let Instr::Goto { offset, cond: None } = &code.instructions[idx] {
-                        if *offset >= 0 {
-                            let target = *offset as usize;
-                            if target > max_start && target < switch_end {
-                                switch_end = target;
-                            }
-                        }
-                    }
-                }
-
-                if switch_end == code.instructions.len() {
-                    // No obvious common break target; treat the end of the
-                    // method as the end of the switch.
-                    switch_end = code.instructions.len();
-                }
-
-                let base_stack = stack.clone();
-                struct BranchData {
-                    values: Vec<i32>,
-                    is_default: bool,
-                    body: Vec<decomped::Statement>,
-                    result: Option<decomped::Expression>,
-                    exits: bool,
-                }
-
-                let mut branches_data = Vec::new();
-
-                for (idx, (start, values, is_default)) in branches.iter().enumerate() {
-                    if *start >= code.instructions.len() {
-                        warn!(target = *start, "LookupSwitch target out of bounds");
-                        continue;
-                    }
-
-                    let next_start = branches.get(idx + 1).map(|(s, _, _)| *s).unwrap_or(switch_end);
-                    let mut branch_end = next_start.min(switch_end);
-
-                    for scan_idx in *start..branch_end {
-                        if let Instr::Goto { offset, cond: None } = &code.instructions[scan_idx] {
-                            if *offset >= 0 {
-                                let target = *offset as usize;
-                                if target >= switch_end {
-                                    branch_end = scan_idx;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    let mut branch_pc = *start;
-                    let mut branch_stack = base_stack.clone();
-                    let body = decomp_block(code, &mut branch_pc, branch_end, &mut branch_stack, next_temp)?;
-
-                    let mut branch_result = None;
-                    if branch_stack.len() == base_stack.len() + 1 {
-                        branch_result = branch_stack.pop();
-                    }
-                    if branch_stack.len() != base_stack.len() {
-                        warn!(branch_start = *start, "Switch branch leaves inconsistent stack depth");
-                    }
-
-                    let exits = matches!(body.last(), Some(
-                        decomped::Statement::Return { .. } |
-                        decomped::Statement::Expression { expr: decomped::Expression::Throw { .. } }
-                    ));
-
-                    branches_data.push(BranchData {
-                        values: values.clone(),
-                        is_default: *is_default,
-                        body,
-                        result: branch_result,
-                        exits,
-                    });
-                }
-
-                let continuing_branches: Vec<_> = branches_data.iter().filter(|b| !b.exits).collect();
-                let all_branches_yield = !continuing_branches.is_empty() && continuing_branches.iter().all(|b| b.result.is_some());
-                let branch_expr = |branch: &BranchData| -> Option<decomped::Expression> {
-                    if let Some(res) = &branch.result {
-                        if branch.body.is_empty() {
-                            return Some(res.clone());
-                        }
-                    }
-                    if branch.body.len() == 1 {
-                        if let decomped::Statement::Expression { expr: decomped::Expression::Throw { value } } = &branch.body[0] {
-                            return Some(decomped::Expression::Throw { value: Box::new(value.as_ref().clone()) });
-                        }
-                    }
-                    None
-                };
-                let switch_expr_possible = branches_data.iter().all(|b| branch_expr(b).is_some());
-                let mut cases_out = Vec::new();
-                let mut default_body = Vec::new();
-                let mut result_temp = None;
-
-                if switch_expr_possible {
-                    let mut cases_expr = Vec::new();
-                    let mut default_expr = None;
-                    for branch in &branches_data {
-                        let expr = branch_expr(branch).unwrap();
-                        if branch.is_default {
-                            default_expr = Some(expr);
-                        } else if !branch.values.is_empty() {
-                            let mut sorted_values = branch.values.clone();
-                            sorted_values.sort_unstable();
-                            cases_expr.push(decomped::SwitchExprCase { values: sorted_values, value: expr });
-                        }
-                    }
-                    cases_expr.sort_by_key(|c| c.values.first().copied().unwrap_or(i32::MAX));
-                    if let Some(default_expr) = default_expr {
-                        stack.push(decomped::Expression::Switch {
-                            value: Box::new(switch_value),
-                            cases: cases_expr,
-                            default: Box::new(default_expr),
-                        });
-                        *pc = switch_end;
-                        continue;
-                    }
-                }
-
-                if all_branches_yield && !branches_data.is_empty() {
-                    result_temp = Some(*next_temp);
-                    *next_temp += 1;
-                }
-
-                for branch in branches_data {
-                    let mut body = branch.body;
-                    if let Some(temp_idx) = result_temp {
-                        if !branch.exits {
-                            if let Some(value) = branch.result {
-                                body.push(decomped::Statement::StoreTemp { index: temp_idx, value });
-                            }
-                        }
-                    }
-
-                    if branch.is_default {
-                        default_body = body.clone();
-                    }
-                    if !branch.values.is_empty() {
-                        let mut sorted_values = branch.values.clone();
-                        sorted_values.sort_unstable();
-                        cases_out.push(decomped::SwitchCase { values: sorted_values, body });
-                    }
-                }
-
-                cases_out.sort_by_key(|c| c.values.first().copied().unwrap_or(i32::MAX));
-
-                statements.push(decomped::Statement::Switch { value: switch_value, cases: cases_out, default: default_body });
-
-                if let Some(temp_idx) = result_temp {
-                    stack.push(decomped::Expression::LoadTemp { index: temp_idx });
-                } else {
-                    *stack = base_stack;
-                }
-                *pc = switch_end;
-                continue;
-            }
+            Instr::LookupSwitch { .. } |
+            Instr::TableSwitch { .. } => bail!("Unsupported switch"),
             Instr::Return { kind } => {
                 let value = if let Some(kind) = kind {
                     Some((kind.clone(), pop_stack(stack)?))
@@ -788,29 +450,115 @@ fn decomp_block(
                 stack.push(decomped::Expression::Cast { class: class.clone(), value });
             }
             Instr::Unknown(instruction) => warn!(%instruction, "Cannot decompile unknown instruction"),
-            Instr::Goto { .. } => unreachable!(),
+            Instr::Goto { .. } => bail!("Unexpected goto inside decomp_block"),
         }
-
-        *pc += 1;
     }
 
     Ok(statements)
 }
 
-impl DecompClassExtractor {
-    fn decomp_code(code: &minijvm::Code) -> anyhow::Result<Vec<decomped::Statement>> {
-        let mut stack = Vec::new();
-        let mut pc = 0;
-        let mut next_temp = 0;
-        let statements = decomp_block(code, &mut pc, code.instructions.len(), &mut stack, &mut next_temp)?;
+fn construct_cfg<'a>(instructions: &'a [minijvm::Instruction]) -> anyhow::Result<ControlFlowGraph<'a>> {
+    let mut current_block_start = 0;
 
-        if !stack.is_empty() {
-            warn!("Stack isn't empty at the end of decompilation, is this a bug?");
+    let mut cfg = ControlFlowGraph {
+        blocks: vec![],
+    };
+
+    // Lists all instructions that are the target of gotos
+    let mut jump_target_markers = HashSet::<usize>::new();
+
+    for (pc, instr) in instructions.into_iter().enumerate() {
+        if jump_target_markers.contains(&pc) && current_block_start != pc {
+            cfg.blocks.push(CFGBlock {
+                start_idx: current_block_start,
+                instructions: &instructions[current_block_start..pc],
+                cond_goto: None,
+                next_block_idx: Some(pc),
+            });
+            current_block_start = pc;
         }
 
-        Ok(statements)
+        if let &minijvm::Instruction::Goto { target, ref cond } = instr {
+            ensure!(target != pc, "Goto pointing to itself?");
+            ensure!(!jump_target_markers.contains(&pc), "Goto jumping to goto? Not supported");
+            ensure!(target > pc, "Backward gotos are not yes supported");
+
+            cfg.blocks.push(CFGBlock {
+                start_idx: current_block_start,
+                instructions: &instructions[current_block_start..pc],
+                cond_goto: cond.as_ref().map(|cond| CFGGoto {
+                    cond,
+                    block_idx: target,
+                }),
+                next_block_idx: cond.as_ref().map(|_| pc + 1)
+                    .or(Some(target)),
+            });
+
+            current_block_start = pc + 1;
+            jump_target_markers.insert(target);
+        }
     }
 
+    // push the last block
+    if current_block_start != instructions.len() {
+        cfg.blocks.push(CFGBlock {
+            start_idx: current_block_start,
+            instructions: &instructions[current_block_start..instructions.len()],
+            cond_goto: None,
+            next_block_idx: None,
+        });
+    }
+
+    // Convert block_idx that before this are actually the target instruction idx
+    // into the block index that contains that instruction
+    {
+        let blocks_ranges = cfg.blocks.iter().map(|block| block.range()).collect_vec();
+        let ops_idx_to_block_idx = move |i: usize| blocks_ranges.iter().position(|p| p.contains(&i))
+            .ok_or_else(|| anyhow!("Invalid block jump idx"));
+        for block in &mut cfg.blocks {
+            block.next_block_idx = block.next_block_idx.map(&ops_idx_to_block_idx).transpose()?;
+            if let Some(goto) = &mut block.cond_goto {
+                goto.block_idx = ops_idx_to_block_idx(goto.block_idx)?;
+            }
+        }
+    }
+
+    Ok(cfg)
+}
+
+fn decomp_block(cfg: &ControlFlowGraph, block_index: usize) -> anyhow::Result<Vec<decomped::Statement>> {
+    let block = &cfg.blocks[block_index];
+
+    let mut next_temp = 0u16;
+    let mut stack = vec![];
+
+    let mut statements = decomp_block_code(&block.instructions, &mut stack, &mut next_temp)?;
+
+    if let Some(goto) = &block.cond_goto {
+        let cond_expression = convert_condition_to_expression(goto.cond, &mut stack)?;
+        statements.push(decomped::Statement::If {
+            condition: cond_expression,
+            then_branch: decomp_block(cfg, goto.block_idx)?,
+            else_branch: block.next_block_idx
+                .map(|block_idx| decomp_block(cfg, block_idx))
+                .transpose()?
+                .unwrap_or_default(),
+        });
+    }
+    else if let Some(next) = block.next_block_idx {
+        statements.extend(decomp_block(cfg, next)?);
+    }
+
+    Ok(statements)
+}
+
+fn decomp_code(code: &minijvm::Code) -> anyhow::Result<Vec<decomped::Statement>> {
+    let cfg = construct_cfg(&code.instructions)?;
+
+    decomp_block(&cfg, 0)
+}
+
+impl DecompClassExtractor {
     #[tracing::instrument(name = "decomp_class", skip_all, fields(class_name = %class.name))]
     fn decomp(class: &minijvm::Class) -> anyhow::Result<decomped::Class> {
         let mut result = decomped::Class {
@@ -826,7 +574,7 @@ impl DecompClassExtractor {
                     signature: method.signature.clone().unwrap_or_else(|| method.descriptor.to_signature()),
                     access_flags: method.access_flags.clone(),
                     // Decompilation error is mapped to None with a warning
-                    code: method.code.as_ref().map(Self::decomp_code).transpose().inspect_err(|e| {
+                    code: method.code.as_ref().map(decomp_code).transpose().inspect_err(|e| {
                         error!(error = %e, "Error while decompiling method code");
                     }).ok().flatten(),
                 })

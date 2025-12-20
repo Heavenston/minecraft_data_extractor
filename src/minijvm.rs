@@ -373,6 +373,17 @@ impl IfCmp {
             IfCmp::Ge => ">=",
         }
     }
+
+    pub fn invert(&self) -> Self {
+        match self {
+            IfCmp::Eq => IfCmp::Ne,
+            IfCmp::Ne => IfCmp::Eq,
+            IfCmp::Lt => IfCmp::Ge,
+            IfCmp::Le => IfCmp::Gt,
+            IfCmp::Gt => IfCmp::Le,
+            IfCmp::Ge => IfCmp::Lt,
+        }
+    }
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
@@ -411,7 +422,7 @@ pub enum Instruction {
     ArrayLength,
 
     Goto {
-        offset: i32,
+        target: usize,
         cond: Option<GotoCondition>,
     },
     Jsr {
