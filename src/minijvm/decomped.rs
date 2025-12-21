@@ -1,4 +1,5 @@
 pub mod visitor;
+
 use super::{ Ident, IdentPath, AccessFlags, JavaTypeSignature, MethodSignature };
 use super::signatures;
 

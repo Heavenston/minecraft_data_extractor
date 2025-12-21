@@ -1,9 +1,12 @@
+mod cfg;
+use cfg::*;
+
 use crate::{ mappings, minijvm::{ self, decomped::{ self, visitor::{ mut_visitor as mv, ref_visitor as rv } } } };
 use mv::MutVisitor;
 use rv::RefVisitor;
 
-use std::{collections::{HashMap, HashSet}, ops::Range};
-use anyhow::{anyhow, bail, ensure};
+use std::{ collections::{ HashMap } };
+use anyhow::{ anyhow, bail, ensure };
 use tracing::{ debug_span, error, warn };
 use itertools::Itertools;
 
@@ -152,31 +155,6 @@ impl mv::MutVisitor for TempSimplifier {
     }
 }
 
-#[derive(Debug)]
-struct CFGGoto<'a> {
-    cond: &'a minijvm::GotoCondition,
-    block_idx: usize,
-}
-
-#[derive(Debug)]
-struct CFGBlock<'a> {
-    start_idx: usize,
-    instructions: &'a [minijvm::Instruction],
-    cond_goto: Option<CFGGoto<'a>>,
-    next_block_idx: Option<usize>,
-}
-
-impl CFGBlock<'_> {
-    pub fn range(&self) -> Range<usize> {
-        self.start_idx..self.start_idx + self.instructions.len()
-    }
-}
-
-#[derive(Debug)]
-struct ControlFlowGraph<'a> {
-    blocks: Vec<CFGBlock<'a>>,
-}
-
 #[derive(Debug, bincode::Encode)]
 pub struct DecompClassExtractor {
     pub class: String,
@@ -229,6 +207,16 @@ fn convert_condition_to_expression(cond: &minijvm::GotoCondition, stack: &mut Ve
         cmp: cond.cmp.clone(),
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
+    })
+}
+
+fn invert_condition_expression(expression: decomped::Expression) -> anyhow::Result<decomped::Expression> {
+    let decomped::Expression::Compare { cmp, lhs, rhs } = expression
+    else { bail!("Can only invert compare expression") };
+    Ok(decomped::Expression::Compare {
+        cmp: cmp.invert(),
+        lhs,
+        rhs,
     })
 }
 
@@ -455,132 +443,21 @@ fn decomp_block_code(
     Ok(statements)
 }
 
-fn construct_cfg<'a>(instructions: &'a [minijvm::Instruction]) -> anyhow::Result<ControlFlowGraph<'a>> {
-    let mut current_block_start = 0;
-
-    let mut cfg = ControlFlowGraph {
-        blocks: vec![],
-    };
-
-    // Lists all instructions that are the target of gotos
-    let mut jump_target_markers = HashSet::<usize>::new();
-
-    for (pc, instr) in instructions.into_iter().enumerate() {
-        if jump_target_markers.contains(&pc) && current_block_start != pc {
-            cfg.blocks.push(CFGBlock {
-                start_idx: current_block_start,
-                instructions: &instructions[current_block_start..pc],
-                cond_goto: None,
-                next_block_idx: Some(pc),
-            });
-            current_block_start = pc;
-        }
-
-        if let &minijvm::Instruction::Goto { target, ref cond } = instr {
-            ensure!(target != pc, "Goto pointing to itself?");
-            ensure!(!jump_target_markers.contains(&pc), "Goto jumping to goto? Not supported");
-            ensure!(target > pc, "Backward gotos are not yes supported");
-
-            cfg.blocks.push(CFGBlock {
-                start_idx: current_block_start,
-                instructions: &instructions[current_block_start..pc],
-                cond_goto: cond.as_ref().map(|cond| CFGGoto {
-                    cond,
-                    block_idx: target,
-                }),
-                next_block_idx: cond.as_ref().map(|_| pc + 1)
-                    .or(Some(target)),
-            });
-
-            current_block_start = pc + 1;
-            jump_target_markers.insert(target);
-        }
-    }
-
-    // push the last block
-    if current_block_start != instructions.len() {
-        cfg.blocks.push(CFGBlock {
-            start_idx: current_block_start,
-            instructions: &instructions[current_block_start..instructions.len()],
-            cond_goto: None,
-            next_block_idx: None,
-        });
-    }
-
-    // Convert block_idx that before this are actually the target instruction idx
-    // into the block index that contains that instruction
-    {
-        let blocks_ranges = cfg.blocks.iter().map(|block| block.range()).collect_vec();
-        let ops_idx_to_block_idx = move |i: usize| blocks_ranges.iter().position(|p| p.contains(&i))
-            .ok_or_else(|| anyhow!("Invalid block jump idx"));
-        for block in &mut cfg.blocks {
-            block.next_block_idx = block.next_block_idx.map(&ops_idx_to_block_idx).transpose()?;
-            if let Some(goto) = &mut block.cond_goto {
-                goto.block_idx = ops_idx_to_block_idx(goto.block_idx)?;
-            }
-        }
-    }
-
-    Ok(cfg)
-}
-
-fn decomp_block(cfg: &ControlFlowGraph, block_index: usize) -> anyhow::Result<(Vec<decomped::Statement>, Option::<usize>)> {
-    let block = &cfg.blocks[block_index];
-
-    let mut next_temp = 0u16;
-    let mut stack = vec![];
-
-    let mut statements = decomp_block_code(&block.instructions, &mut stack, &mut next_temp)?;
-
-    if let Some(goto) = &block.cond_goto {
-        let cond_expression = convert_condition_to_expression(goto.cond, &mut stack)?;
-        ensure!(stack.is_empty(), "Non-empty stack after block");
-        let (mut then_branch, then_next) = decomp_block(cfg, goto.block_idx)?;
-
-        if block.next_block_idx == then_next {
-            statements.push(decomped::Statement::If {
-                condition: cond_expression,
-                then_branch,
-                else_branch: vec![],
-            });
-            Ok((statements, then_next))
-        }
-        else {
-            if let Some(then_next) = then_next {
-                then_branch.extend(decomp_block_continued(cfg, then_next)?);
-            }
-            let else_branch = block.next_block_idx
-                .map(|block_idx| decomp_block_continued(cfg, block_idx))
-                .transpose()?
-                .unwrap_or_default();
-
-            statements.push(decomped::Statement::If {
-                condition: cond_expression,
-                then_branch,
-                else_branch,
-            });
-
-            Ok((statements, None))
-        }
-    }
-    else {
-        Ok((statements, block.next_block_idx))
-    }
-
-}
-
-fn decomp_block_continued(cfg: &ControlFlowGraph, block_index: usize) -> anyhow::Result<Vec<decomped::Statement>> {
-    let (mut statements, next) = decomp_block(cfg, block_index)?;
-    if let Some(next) = next {
-        statements.extend(decomp_block_continued(cfg, next)?);
-    }
-    Ok(statements)
-}
-
 fn decomp_code(code: &minijvm::Code) -> anyhow::Result<Vec<decomped::Statement>> {
-    let cfg = construct_cfg(&code.instructions)?;
-
-    decomp_block_continued(&cfg, 0)
+    let mut cfg = ControlFlowGraph::new(&code.instructions)?;
+    cfg.simplify()?;
+    if cfg.blocks.len() > 1 {
+        println!("{cfg:#?}");
+    }
+    match cfg.blocks.into_iter().at_most_one() {
+        Ok(Some(b)) => {
+            ensure!(b.cond_goto.is_none());
+            ensure!(b.next_block_idx.is_none());
+            Ok(b.statements)
+        },
+        Ok(None) => bail!("No block in CFG after simplification"),
+        Err(b) => bail!("CFG Simplicition could not reduce to a single block ({} blocks)", b.count()),
+    }
 }
 
 impl DecompClassExtractor {
@@ -645,7 +522,7 @@ impl DecompClassExtractor {
             });
         }
 
-        class.fields.retain(|f| !f.access_flags.enum_ && f.name.0 != "$VALUES");
+        class.fields.retain(|f| !f.access_flags.enum_ && f.name.0 != "$VLUES");
         class.methods.retain(|m| m.name.0 != "values" && m.name.0 != "valueOf" && m.name.0 != "$values");
     }
 
