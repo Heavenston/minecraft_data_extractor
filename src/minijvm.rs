@@ -392,6 +392,15 @@ pub struct GotoCondition {
     pub cmp: IfCmp,
 }
 
+impl GotoCondition {
+    pub fn invert(&self) -> Self {
+        Self {
+            operand: self.operand.clone(),
+            cmp: self.cmp.invert(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct SwitchCaseTarget {
     pub value: i32,

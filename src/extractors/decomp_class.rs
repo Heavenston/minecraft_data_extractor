@@ -210,16 +210,6 @@ fn convert_condition_to_expression(cond: &minijvm::GotoCondition, stack: &mut Ve
     })
 }
 
-fn invert_condition_expression(expression: decomped::Expression) -> anyhow::Result<decomped::Expression> {
-    let decomped::Expression::Compare { cmp, lhs, rhs } = expression
-    else { bail!("Can only invert compare expression") };
-    Ok(decomped::Expression::Compare {
-        cmp: cmp.invert(),
-        lhs,
-        rhs,
-    })
-}
-
 fn pop_args(stack: &mut Vec<decomped::Expression>, count: usize) -> anyhow::Result<Vec<decomped::Expression>> {
     if stack.len() < count {
         return Err(anyhow!("Not enough expressions on stack for arguments"));
@@ -443,21 +433,48 @@ fn decomp_block_code(
     Ok(statements)
 }
 
+fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &mut u16, stack: &mut Vec<decomped::Expression>) -> anyhow::Result<Vec<decomped::Statement>> {
+    let mut statements = Vec::new();
+
+    for instruction in instructions {
+        match instruction {
+            CFGInstruction::Intsructions(instructions) => {
+                statements.extend(decomp_block_code(instructions, stack, next_temp)?);
+            },
+            CFGInstruction::If { condition, then, r#else } => {
+                let condition = convert_condition_to_expression(&condition.invert(), stack)?;
+                let mut duped_stack = stack.clone();
+                let then_instructions = decomp_cfg_instructions(&then, next_temp, stack)?;
+                let else_instructions = decomp_cfg_instructions(&r#else, next_temp, &mut duped_stack)?;
+                ensure!(stack.len() == duped_stack.len(), "If branches result in different stack lengths ({} vs {})", stack.len(), duped_stack.len());
+
+                statements.push(decomped::Statement::If {
+                    condition,
+                    then_branch: else_instructions,
+                    else_branch: then_instructions,
+                });
+            },
+        }
+    }
+
+    Ok(statements)
+}
+
 fn decomp_code(code: &minijvm::Code) -> anyhow::Result<Vec<decomped::Statement>> {
     let mut cfg = ControlFlowGraph::new(&code.instructions)?;
     cfg.simplify()?;
-    if cfg.blocks.len() > 1 {
-        println!("{cfg:#?}");
-    }
-    match cfg.blocks.into_iter().at_most_one() {
-        Ok(Some(b)) => {
-            ensure!(b.cond_goto.is_none());
-            ensure!(b.next_block_idx.is_none());
-            Ok(b.statements)
-        },
+    let block = match cfg.blocks.into_iter().at_most_one() {
+        Ok(Some(b)) => b,
         Ok(None) => bail!("No block in CFG after simplification"),
         Err(b) => bail!("CFG Simplicition could not reduce to a single block ({} blocks)", b.count()),
-    }
+    };
+    ensure!(block.cond_goto.is_none());
+    ensure!(block.next_block_idx.is_none());
+
+    let mut stack = vec![];
+    let statements = decomp_cfg_instructions(&block.instructions, &mut 0, &mut stack)?;
+    ensure!(stack.is_empty(), "Stack not empty after decompilation");
+    Ok(statements)
 }
 
 impl DecompClassExtractor {
