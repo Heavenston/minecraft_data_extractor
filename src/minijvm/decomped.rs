@@ -221,6 +221,21 @@ impl Constant {
 }
 
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+pub enum BoolOp {
+    And,
+    Or,
+}
+
+impl BoolOp {
+    pub fn printed(&self) -> String {
+        match self {
+            Self::And => format!("&&"),
+            Self::Or => format!("||"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum Expression {
     Constant {
         value: Constant,
@@ -243,6 +258,11 @@ pub enum Expression {
         op: super::UnOp,
         value_kind: super::ValueKind,
         operand: Box<Expression>,
+    },
+    BoolOp {
+        op: BoolOp,
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
     },
 
     InstanceOf {
@@ -358,6 +378,9 @@ impl Expression {
                 let op_str = op.printed();
                 (90, format!("{op_str}{}", operand.printed_prec(ctx, 90)))
             }
+            Self::BoolOp { op, lhs, rhs } => {
+                (80, format!("{} {} {}", lhs.printed(ctx), op.printed(), rhs.printed(ctx)))
+            },
             Expression::InstanceOf { class, object } => {
                 (0, format!("{} instanceof {}", object.printed(ctx), class.descriptor))
             }

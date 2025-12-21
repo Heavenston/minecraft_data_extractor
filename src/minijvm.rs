@@ -342,7 +342,7 @@ impl UnOp {
     }
 }
 
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum IfOperand {
     Int,
     /// Only support Eq and Ne operations
@@ -352,7 +352,7 @@ pub enum IfOperand {
     Null,
 }
 
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum IfCmp {
     Eq,
     Ne,
@@ -386,7 +386,7 @@ impl IfCmp {
     }
 }
 
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct GotoCondition {
     pub operand: IfOperand,
     pub cmp: IfCmp,

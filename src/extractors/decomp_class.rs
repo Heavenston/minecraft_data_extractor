@@ -214,9 +214,7 @@ fn pop_args(stack: &mut Vec<decomped::Expression>, count: usize) -> anyhow::Resu
     if stack.len() < count {
         return Err(anyhow!("Not enough expressions on stack for arguments"));
     }
-    let mut args: Vec<_> = stack.drain(stack.len() - count..).collect();
-    args.reverse();
-    Ok(args)
+    Ok(stack.drain(stack.len() - count..).collect())
 }
 
 fn pop_stack(stack: &mut Vec<decomped::Expression>) -> anyhow::Result<decomped::Expression> {
@@ -443,16 +441,47 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
             },
             CFGInstruction::If { condition, then, r#else } => {
                 let condition = convert_condition_to_expression(&condition.invert(), stack)?;
+                ensure!(stack.is_empty(), "Non-empty stack entering `if` is not supported");
                 let mut duped_stack = stack.clone();
                 let then_instructions = decomp_cfg_instructions(&then, next_temp, stack)?;
                 let else_instructions = decomp_cfg_instructions(&r#else, next_temp, &mut duped_stack)?;
                 ensure!(stack.len() == duped_stack.len(), "If branches result in different stack lengths ({} vs {})", stack.len(), duped_stack.len());
 
-                statements.push(decomped::Statement::If {
-                    condition,
-                    then_branch: else_instructions,
-                    else_branch: then_instructions,
-                });
+                match stack.drain(..).zip(duped_stack.into_iter()).at_most_one().map_err(|e| e.count()) {
+                    Ok(Some((lhs, rhs))) => {
+                        stack.push(decomped::Expression::Ternary {
+                            condition: Box::new(condition),
+                            then_value: Box::new(lhs),
+                            else_value: Box::new(rhs),
+                        });
+                    },
+                    Ok(None) => statements.push(decomped::Statement::If {
+                        condition,
+                        then_branch: else_instructions,
+                        else_branch: then_instructions,
+                    }),
+                    Err(count) => bail!("If branch should not result in a stack with more than one value, got {count}"),
+                }
+            },
+            CFGInstruction::BoolAnd { conditions } => {
+                let result = std::iter::chain(
+                    std::iter::once(pop_stack(stack)),
+                    conditions.into_iter()
+                    .map(|instructions| -> anyhow::Result<decomped::Expression> {
+                        let start_of_stack = stack.len();
+                        let statements = decomp_cfg_instructions(&instructions, next_temp, stack)?;
+                        ensure!(statements.is_empty(), "BoolAnd conditions should not contain statements");
+                        ensure!(stack.len() == start_of_stack + 1, "BoolAnd conditions should push exactly one expression to stack (got {})", stack.len() as isize - start_of_stack as isize);
+                        pop_stack(stack)
+                    }),
+                ).rev().reduce(|previous_op, expression| -> anyhow::Result<decomped::Expression> {
+                    Ok(decomped::Expression::BoolOp {
+                        op: decomped::BoolOp::And,
+                        lhs: Box::new(expression?),
+                        rhs: Box::new(previous_op?),
+                    })
+                }).expect("BoolAnd conditions can never be empty")?;
+                stack.push(result);
             },
         }
     }

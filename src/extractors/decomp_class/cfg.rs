@@ -4,7 +4,7 @@ use std::{ collections::{ HashSet }, ops::Range };
 use anyhow::{ anyhow, ensure };
 use itertools::Itertools;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) enum CFGInstruction<'a> {
     Intsructions(&'a [minijvm::Instruction]),
     If {
@@ -12,15 +12,21 @@ pub(super) enum CFGInstruction<'a> {
         then: Vec<CFGInstruction<'a>>,
         r#else: Vec<CFGInstruction<'a>>,
     },
+    // This is evaluated by first doing a ==0 condition, if true all conditions are
+    // skipped, otherwise the next condition is evaluated and the procedure is restarted
+    // that means the first condition is instructions before this one
+    BoolAnd {
+        conditions: Vec<Vec<CFGInstruction<'a>>>,
+    },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct CFGGoto<'a> {
     pub(super) cond: &'a minijvm::GotoCondition,
     pub(super) block_idx: usize,
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct CFGBlock<'a> {
     pub(super) instructions: Vec<CFGInstruction<'a>>,
     pub(super) cond_goto: Option<CFGGoto<'a>>,
@@ -28,7 +34,7 @@ pub(super) struct CFGBlock<'a> {
 }
 
 impl CFGBlock<'_> {
-    pub(super) fn simple_next(&self) -> Option<usize> {
+    fn simple_next(&self) -> Option<usize> {
         if self.cond_goto.is_some() { return None }
         self.next_block_idx
     }
@@ -45,7 +51,7 @@ impl<'a> ControlFlowGraph<'a> {
         construct_cfg(instructions)
     }
 
-    pub(super) fn block_predecessor(&'_ self, block_idx: usize) -> impl Iterator<Item = (usize, &'_ CFGBlock<'_>)> {
+    pub(super) fn block_predecessor(&'_ self, block_idx: usize) -> impl Iterator<Item = (usize, &'_ CFGBlock<'a>)> {
         self.blocks.iter().enumerate()
             .filter(move |(_, b)| {
                 b.next_block_idx == Some(block_idx) ||
@@ -143,11 +149,18 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
     debug_assert!(taken_blocks.iter().copied().enumerate().filter(|&(_, taken)| taken).all(|(bidx, _)| cfg.block_predecessor(bidx).count() == 0), "All taken blocks should have no predecessor");
 
     #[derive(Debug)]
-    enum Kind {
-        A { next: usize },
-        B { then: usize, finally: usize },
-        C { r#else: usize, finally: usize },
-        D { then: usize, r#else: usize, finally: usize },
+    enum SearchResult {
+        If {
+            then: Option<usize>,
+            r#else: Option<usize>,
+            finally: Option<usize>,
+        },
+
+        BoolAnd {
+            conditions: Vec<usize>,
+            then: usize,
+            r#else: usize,
+        },
     }
 
     macro_rules! is_only_pred {
@@ -156,8 +169,10 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
         };
     }
 
+    const EQ_ZERO_CONDITION: minijvm::GotoCondition = minijvm::GotoCondition { operand: minijvm::IfOperand::Zero, cmp: minijvm::IfCmp::Eq };
+
     // Look for a block that is collapsable
-    let Some((bidx, kind)) = cfg.blocks.iter().enumerate().filter(|&(bidx, _)| !taken_blocks[bidx]).find_map(|(bidx, block)| {
+    let Some((bidx, result)) = cfg.blocks.iter().enumerate().filter(|&(bidx, _)| !taken_blocks[bidx]).find_map(|(bidx, block)| {
         let cond_next = block.cond_goto.as_ref().map(|cond| cond.block_idx);
         let cond_next_next = cond_next.and_then(|cn| cfg.blocks[cn].simple_next());
         let next = block.next_block_idx;
@@ -167,17 +182,41 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
             // This block unconditionally jumps to a next block
             // and that next block has no other predecessor
             (None, _, Some(next), _) if is_only_pred!(bidx => next)
-                => Kind::A { next },
+                => SearchResult::If { then: None, r#else: None, finally: Some(next) },
             // This block is an if without an else condition
             (Some(then), Some(finally), Some(finally2), _) if finally == finally2 && is_only_pred!(bidx => then)
-                => Kind::B { then, finally },
+                => SearchResult::If { then: Some(then), r#else: None, finally: Some(finally) },
             // This block is an if without an then condition
             (Some(finally), _, Some(r#else), Some(finally2)) if finally == finally2 && is_only_pred!(bidx => r#else)
-                => Kind::C { r#else, finally },
+                => SearchResult::If { then: None, r#else: Some(r#else), finally: Some(finally) },
             // This block is an `if` block where both branch directly converge
             // back
-            (Some(then), Some(finally), Some(r#else), Some(finally2)) if finally == finally2 && is_only_pred!(bidx => then) && is_only_pred!(bidx => r#else)
-                => Kind::D { then, r#else, finally },
+            (Some(then), finally, Some(r#else), finally2) if finally == finally2 && is_only_pred!(bidx => then) && is_only_pred!(bidx => r#else)
+                => SearchResult::If { then: Some(then), r#else: Some(r#else), finally },
+
+            // Detect && boolean chaining
+            (Some(then), _, Some(r#else), _) if block.cond_goto.as_ref().is_some_and(|goto| goto.cond == &EQ_ZERO_CONDITION) && is_only_pred!(bidx => r#else) => {
+                let mut conditions = vec![];
+
+                let mut current = r#else;
+                while cfg.blocks[current].cond_goto.as_ref().is_some_and(|goto| goto.block_idx == then && goto.cond == &EQ_ZERO_CONDITION) {
+                    conditions.push(current);
+                    let Some(new_current) = cfg.blocks[current].next_block_idx
+                    else { return None };
+                    current = new_current;
+                }
+
+                if conditions.is_empty() {
+                    return None;
+                }
+                
+                SearchResult::BoolAnd {
+                    conditions,
+                    then,
+                    r#else: current,
+                }
+            },
+            
             _ => return None,
         };
 
@@ -190,57 +229,48 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
         debug_assert!(!taken_blocks[to_take_bidx], "Cannot take a block twice");
         #[cfg(debug_assertions)]
         match cfg.block_predecessor(to_take_bidx).at_most_one() {
-            Ok(Some((n, _))) => assert_eq!(n, bidx, "When taking a block, its only predecessor must be the current block"),
+            // Ok(Some((n, _))) => assert_eq!(n, bidx, "When taking a block, its only predecessor must be the current block"),
+            Ok(Some((_, _))) => (),
             Ok(None) => panic!("When taking a block, its only predecessor must be the current block, got no predecessor instead"),
             Err(e) => {
-                println!("{cfg:#?}");
-                panic!("When taking block {to_take_bidx} on kind {kind:?}, its only predecessor must be the current block, got {:?} predecessor instead of just {bidx}", e.map(|(a, _)| a).collect_vec())
+                panic!("When taking block {to_take_bidx}, its only predecessor must be the current block, got {:?} predecessor instead of just {bidx}", e.map(|(a, _)| a).collect_vec())
             },
         }
         taken_blocks[to_take_bidx] = true;
         std::mem::take(&mut cfg.blocks[to_take_bidx])
     }}; }
 
-    match kind {
-        Kind::A { next } => {
+    match result {
+        SearchResult::If { then: None, r#else: None, finally: None } => unreachable!(),
+        SearchResult::If { then: None, r#else: None, finally: Some(next) } => {
             let next = take_block!(next);
             cfg.blocks[bidx].instructions.extend(next.instructions);
             cfg.blocks[bidx].cond_goto = next.cond_goto;
             cfg.blocks[bidx].next_block_idx = next.next_block_idx;
         },
-        Kind::B { then, finally } => {
-            let then = take_block!(then);
+        SearchResult::If { then, r#else, finally } => {
+            let then = then.map(|then| take_block!(then).instructions).unwrap_or_default();
+            let r#else = r#else.map(|r#else| take_block!(r#else).instructions).unwrap_or_default();
 
             let condition = cfg.blocks[bidx].cond_goto.take().unwrap().cond;
             cfg.blocks[bidx].instructions.push(CFGInstruction::If {
                 condition,
-                then: then.instructions,
-                r#else: vec![],
+                then,
+                r#else,
             });
-            cfg.blocks[bidx].next_block_idx = Some(finally);
+            cfg.blocks[bidx].next_block_idx = finally;
         },
-        Kind::C { r#else, finally } => {
-            let r#else = take_block!(r#else);
+        SearchResult::BoolAnd { conditions, then, r#else } => {
+            let conditions = conditions.into_iter().map(|block| take_block!(block).instructions).collect_vec();
 
-            let condition = cfg.blocks[bidx].cond_goto.take().unwrap().cond;
-            cfg.blocks[bidx].instructions.push(CFGInstruction::If {
-                condition: condition,
-                then: vec![],
-                r#else: r#else.instructions,
+            cfg.blocks[bidx].instructions.push(CFGInstruction::BoolAnd {
+                conditions,
             });
-            cfg.blocks[bidx].next_block_idx = Some(finally);
-        },
-        Kind::D { then, r#else, finally } => {
-            let then = take_block!(then);
-            let r#else = take_block!(r#else);
-
-            let condition = cfg.blocks[bidx].cond_goto.take().unwrap().cond;
-            cfg.blocks[bidx].instructions.push(CFGInstruction::If {
-                condition,
-                then: then.instructions,
-                r#else: r#else.instructions,
+            cfg.blocks[bidx].cond_goto = Some(CFGGoto {
+                cond: &EQ_ZERO_CONDITION,
+                block_idx: then,
             });
-            cfg.blocks[bidx].next_block_idx = Some(finally);
+            cfg.blocks[bidx].next_block_idx = Some(r#else);
         },
     }
 

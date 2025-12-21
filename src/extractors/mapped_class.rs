@@ -99,6 +99,7 @@ impl MappedClassExtractor {
         // FIXME: This can very easily be out-of-sync with the instructions
         match instruction {
             Instr::Ldc { constant } => Instr::Ldc { constant: mappings.map_constant(constant) },
+            Instr::InstanceOf { class } => Instr::InstanceOf { class: mappings.map_class_ref(class) },
             Instr::Invoke { kind, method } => Instr::Invoke { kind: kind.clone(), method: mappings.map_method_ref(method) },
             Instr::InvokeDynamic { call_site, name, descriptor } => {
                 Instr::InvokeDynamic {
