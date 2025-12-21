@@ -75,7 +75,7 @@ impl<'a> MethodPrintContext<'a> {
         if let Some(arg_idx) = self.arg_slots.iter().position(|&s| s == index) {
             return self.arg_name(arg_idx);
         }
-        Cow::Owned(format!("local_{index}"))
+        Cow::Owned(format!("var{index}"))
     }
 }
 
@@ -383,6 +383,9 @@ impl Expression {
                 } else {
                     match object {
                         Some(obj) => format!("{}.{}({args_str})", obj.printed_prec(ctx, 100), method.name.0),
+                        None if method.class.descriptor.simple_class_name() == Some(&ctx.class.name) => {
+                            format!("{}({args_str})", method.name.0)
+                        },
                         None => format!("{}.{}({args_str})", method.class.descriptor, method.name.0),
                     }
                 };
