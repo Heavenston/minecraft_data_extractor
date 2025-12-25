@@ -166,6 +166,15 @@ impl MappedClassExtractor {
                             instructions: code.instructions.iter()
                                 .map(|instr| Self::map_instruction(mappings, class_map, instr))
                                 .collect(),
+                            exception_handlers: code.exception_handlers.iter()
+                                .map(|handler| minijvm::ExceptionHandler {
+                                    start: handler.start,
+                                    end: handler.end,
+                                    handler: handler.handler,
+                                    catch_type: handler.catch_type.as_ref()
+                                        .map(|class_ref| mappings.map_class_ref(class_ref)),
+                                })
+                                .collect(),
                         }),
                     }
                 })

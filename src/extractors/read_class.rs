@@ -169,18 +169,32 @@ impl ReadClassExtractor {
         let mut bootstrap_methods = Vec::new();
         for attr in noak_class.attributes() {
             let attr = try_or!(attr; orelse continue);
+            let attr_name = pool_str!(attr.name())?;
+            let _span = tracing::debug_span!("attr", name = attr_name).entered();
+
+            match attr_name {
+                "InnerClasses" |
+                "SourceFile"
+                    => continue,
+                _ => (),
+            }
+
             let content = try_or!(attr.read_content(noak_class.pool()); orelse continue);
+
             if let noak::reader::AttributeContent::Signature(s) = &content {
                 let signature_str = pool_str!(s.signature())?;
                 out_class.signature = signature_str.parse::<minijvm::ClassSignature>()
                     .inspect_err(|e| error!(error = %e, signature = signature_str, "Could not parse class signature"))
                     .ok();
             }
-            if let noak::reader::AttributeContent::BootstrapMethods(bsm) = &content {
+            else if let noak::reader::AttributeContent::BootstrapMethods(bsm) = &content {
                 for method in bsm.methods() {
                     let method = try_or!(method; orelse continue);
                     bootstrap_methods.push(method);
                 }
+            }
+            else {
+                warn!("Unknown class attribute");
             }
         }
 
@@ -664,7 +678,20 @@ impl ReadClassExtractor {
                     },
                 }
             }
-            Ok(minijvm::Code { instructions })
+
+            Ok(minijvm::Code {
+                instructions,
+                exception_handlers: code.exception_handlers().map(|handler| -> anyhow::Result<_> {
+                    Ok(minijvm::ExceptionHandler {
+                        start: handler.start().as_u32(),
+                        end: handler.end().as_u32(),
+                        handler: handler.handler().as_u32(),
+                        catch_type: handler.catch_type()
+                            .map(|class| pool!(class)).transpose()?
+                            .map(|class| make_class_ref(class)).transpose()?,
+                    })
+                }).try_collect()?,
+            })
         };
 
         for method in noak_class.methods() {
@@ -680,11 +707,16 @@ impl ReadClassExtractor {
                 let attr_name = pool_str!(attr.name())?;
                 let _span = tracing::debug_span!("attr", name = attr_name).entered();
 
-                // NOTE: Obfuscation removes the contents of this attr
-                // TODO: Latest minecraft versions do provide it, so maybe we could
-                // read it though i am not sure it's of any use
-                if attr_name == "MethodParameters" {
-                    continue;
+                match attr_name {
+                    // NOTE: Obfuscation removes the contents of this attr
+                    // TODO: Latest minecraft versions do provide it, so maybe we could
+                    // read it though i am not sure it's of any use
+                    "MethodParameters" |
+                    // Not stored currently, though maybe that could be of use(?)
+                    "RuntimeVisibleAnnotations" |
+                    "Exceptions"
+                        => continue,
+                    _ => (),
                 }
 
                 let content = try_or!(attr.read_content(noak_class.pool()); orelse continue);
@@ -695,8 +727,11 @@ impl ReadClassExtractor {
                         .inspect_err(|e| error!(error = %e, signature = signature_str, "Could not parse method signature"))
                         .ok();
                 }
-                if let noak::reader::AttributeContent::Code(code) = &content {
+                else if let noak::reader::AttributeContent::Code(code) = &content {
                     found_code = Some(convert_code(code)?);
+                }
+                else {
+                    warn!("Unknown method attribute");
                 }
             }
 

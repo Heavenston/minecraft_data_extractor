@@ -490,6 +490,8 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
 }
 
 fn decomp_code(code: &minijvm::Code) -> anyhow::Result<Vec<decomped::Statement>> {
+    ensure!(code.exception_handlers.is_empty(), "Try-catches are not supported");
+
     let mut cfg = ControlFlowGraph::new(&code.instructions)?;
     cfg.simplify()?;
     let block = match cfg.blocks.into_iter().at_most_one() {

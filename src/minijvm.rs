@@ -502,7 +502,16 @@ pub enum Instruction {
 }
 
 #[derive(derive_more::Debug, Clone, bincode::Encode, bincode::Decode)]
+pub struct ExceptionHandler {
+    pub start: u32,
+    pub end: u32,
+    pub handler: u32,
+    pub catch_type: Option<ClassRef>,
+}
+
+#[derive(derive_more::Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct Code {
+    pub exception_handlers: Vec<ExceptionHandler>,
     pub instructions: Vec<Instruction>,
 }
 
