@@ -464,24 +464,25 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
                 }
             },
             CFGInstruction::BoolAnd { conditions } => {
-                let result = std::iter::chain(
-                    std::iter::once(pop_stack(stack)),
-                    conditions.into_iter()
-                    .map(|instructions| -> anyhow::Result<decomped::Expression> {
-                        let start_of_stack = stack.len();
-                        let statements = decomp_cfg_instructions(&instructions, next_temp, stack)?;
-                        ensure!(statements.is_empty(), "BoolAnd conditions should not contain statements");
-                        ensure!(stack.len() == start_of_stack + 1, "BoolAnd conditions should push exactly one expression to stack (got {})", stack.len() as isize - start_of_stack as isize);
-                        pop_stack(stack)
-                    }),
-                ).rev().reduce(|previous_op, expression| -> anyhow::Result<decomped::Expression> {
-                    Ok(decomped::Expression::BoolOp {
-                        op: decomped::BoolOp::And,
-                        lhs: Box::new(expression?),
-                        rhs: Box::new(previous_op?),
-                    })
-                }).expect("BoolAnd conditions can never be empty")?;
-                stack.push(result);
+                // let result = std::iter::chain(
+                //     std::iter::once(pop_stack(stack)),
+                //     conditions.into_iter()
+                //     .map(|(condition, instructions)| -> anyhow::Result<decomped::Expression> {
+                //         let start_of_stack = stack.len();
+                //         let statements = decomp_cfg_instructions(&instructions, next_temp, stack)?;
+                //         ensure!(statements.is_empty(), "BoolAnd conditions should not contain statements");
+                //         ensure!(stack.len() == start_of_stack + 1, "BoolAnd conditions should push exactly one expression to stack (got {})", stack.len() as isize - start_of_stack as isize);
+                //         pop_stack(stack)
+                //     }),
+                // ).rev().reduce(|previous_op, expression| -> anyhow::Result<decomped::Expression> {
+                //     Ok(decomped::Expression::BoolOp {
+                //         op: decomped::BoolOp::And,
+                //         lhs: Box::new(expression?),
+                //         rhs: Box::new(previous_op?),
+                //     })
+                // }).expect("BoolAnd conditions can never be empty")?;
+                // stack.push(result);
+                todo!()
             },
         }
     }
@@ -493,7 +494,9 @@ fn decomp_code(code: &minijvm::Code) -> anyhow::Result<Vec<decomped::Statement>>
     ensure!(code.exception_handlers.is_empty(), "Try-catches are not supported");
 
     let mut cfg = ControlFlowGraph::new(&code.instructions)?;
+    println!("BEFORE {cfg:?}");
     cfg.simplify()?;
+    println!("AFTER {cfg:?}");
     let block = match cfg.blocks.into_iter().at_most_one() {
         Ok(Some(b)) => b,
         Ok(None) => bail!("No block in CFG after simplification"),
@@ -516,7 +519,7 @@ impl DecompClassExtractor {
             access_flags: class.access_flags.clone(),
             super_class: class.super_class.clone(),
             enum_variants: Vec::new(),
-            methods: class.methods.iter().map(|method| -> anyhow::Result<decomped::Method> {
+            methods: class.methods.iter().filter(|method| method.name.0 == "isAllowedInResourceLocation").map(|method| -> anyhow::Result<decomped::Method> {
                 let _span = debug_span!("decomp_method", method_name = %method.name).entered();
 
                 Ok(decomped::Method {
