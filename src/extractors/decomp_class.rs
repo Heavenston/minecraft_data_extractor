@@ -441,13 +441,15 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
             },
             CFGInstruction::If { condition, then, r#else } => {
                 let condition = convert_condition_to_expression(&condition.invert(), stack)?;
-                ensure!(stack.is_empty(), "Non-empty stack entering `if` is not supported");
-                let mut duped_stack = stack.clone();
-                let then_instructions = decomp_cfg_instructions(&then, next_temp, stack)?;
-                let else_instructions = decomp_cfg_instructions(&r#else, next_temp, &mut duped_stack)?;
-                ensure!(stack.len() == duped_stack.len(), "If branches result in different stack lengths ({} vs {})", stack.len(), duped_stack.len());
+                // we use a different stack, which means if conditions cannot take existing values
+                // from the stack, supposedly does not happen
+                let mut then_stack = vec![];
+                let mut else_stack = vec![];
+                let then_instructions = decomp_cfg_instructions(&then, next_temp, &mut then_stack)?;
+                let else_instructions = decomp_cfg_instructions(&r#else, next_temp, &mut else_stack)?;
+                ensure!(then_stack.len() == else_stack.len(), "If branches result in different stack lengths ({} vs {})", then_stack.len(), else_stack.len());
 
-                match stack.drain(..).zip(duped_stack.into_iter()).at_most_one().map_err(|e| e.count()) {
+                match then_stack.into_iter().zip(else_stack.into_iter()).at_most_one().map_err(|e| e.count()) {
                     Ok(Some((lhs, rhs))) => {
                         stack.push(decomped::Expression::Ternary {
                             condition: Box::new(condition),
@@ -464,45 +466,21 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
                 }
             },
             CFGInstruction::ShortCircuit { conditions } => {
-                let result = std::iter::chain(
-                    std::iter::once(pop_stack(stack)),
-                    conditions.into_iter()
+                let operands: Vec<_> = conditions.into_iter()
                     .map(|(condition, instructions)| -> anyhow::Result<decomped::Expression> {
-                        let start_of_stack = stack.len();
+                        // this is taking the expressions of the last iteration
+                        let cond_expr = convert_condition_to_expression(condition, stack)?;
+
                         let statements = decomp_cfg_instructions(&instructions, next_temp, stack)?;
                         ensure!(statements.is_empty(), "BoolAnd conditions should not contain statements");
-                        ensure!(stack.len() == start_of_stack + 1, "BoolAnd conditions should push exactly one expression to stack (got {})", stack.len() as isize - start_of_stack as isize);
-                        pop_stack(stack)
-                    }),
-                ).rev().reduce(|previous_op, expression| -> anyhow::Result<decomped::Expression> {
-                    Ok(decomped::Expression::BoolOp {
-                        op: decomped::BoolOp::And,
-                        lhs: Box::new(expression?),
-                        rhs: Box::new(previous_op?),
+
+                        Ok(cond_expr)
                     })
-                }).expect("BoolAnd conditions can never be empty")?;
-                stack.push(result);
-            },
-            CFGInstruction::BoolAnd { conditions } | CFGInstruction::BoolOr { conditions } => {
-                // let result = std::iter::chain(
-                //     std::iter::once(pop_stack(stack)),
-                //     conditions.into_iter()
-                //     .map(|(condition, instructions)| -> anyhow::Result<decomped::Expression> {
-                //         let start_of_stack = stack.len();
-                //         let statements = decomp_cfg_instructions(&instructions, next_temp, stack)?;
-                //         ensure!(statements.is_empty(), "BoolAnd conditions should not contain statements");
-                //         ensure!(stack.len() == start_of_stack + 1, "BoolAnd conditions should push exactly one expression to stack (got {})", stack.len() as isize - start_of_stack as isize);
-                //         pop_stack(stack)
-                //     }),
-                // ).rev().reduce(|previous_op, expression| -> anyhow::Result<decomped::Expression> {
-                //     Ok(decomped::Expression::BoolOp {
-                //         op: decomped::BoolOp::And,
-                //         lhs: Box::new(expression?),
-                //         rhs: Box::new(previous_op?),
-                //     })
-                // }).expect("BoolAnd conditions can never be empty")?;
-                // stack.push(result);
-                todo!()
+                    .try_collect()?;
+                stack.push(decomped::Expression::BoolOp {
+                    op: decomped::BoolOp::And,
+                    operands,
+                });
             },
         }
     }
@@ -527,7 +505,7 @@ fn decomp_code(code: &minijvm::Code) -> anyhow::Result<Vec<decomped::Statement>>
 
     let mut stack = vec![];
     let statements = decomp_cfg_instructions(&block.instructions, &mut 0, &mut stack)?;
-    ensure!(stack.is_empty(), "Stack not empty after decompilation");
+    ensure!(stack.is_empty(), "Stack not empty after decompilation: {stack:?}");
     Ok(statements)
 }
 

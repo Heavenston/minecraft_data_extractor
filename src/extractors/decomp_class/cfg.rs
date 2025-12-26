@@ -17,15 +17,6 @@ pub(super) enum CFGInstruction<'a> {
     ShortCircuit {
         conditions: Vec<(minijvm::GotoCondition, Vec<CFGInstruction<'a>>)>,
     },
-    /// This is evaluated by first evaluating the condition, if true this stops, otherwise
-    /// the associated instructions are evaluated, continuing like that down the list
-    BoolAnd {
-        conditions: Vec<(&'a minijvm::GotoCondition, Vec<CFGInstruction<'a>>)>,
-    },
-    /// See [`Self::BoolAnd`]
-    BoolOr {
-        conditions: Vec<(&'a minijvm::GotoCondition, Vec<CFGInstruction<'a>>)>,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -188,17 +179,6 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
             /// If any of the conditions fail
             shortcircuit: usize,
         },
-
-        BoolAnd {
-            conditions: Vec<usize>,
-            then: usize,
-            r#else: usize,
-        },
-        BoolOr {
-            conditions: Vec<usize>,
-            then: usize,
-            r#else: usize,
-        },
     }
 
     /// Wether $parent is the only predecessor to $child
@@ -233,8 +213,6 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
 
             // Detect short cirtuiting boolean chaining
             (Some(then), _, Some(r#else), _) => {
-                let mut conditions = vec![];
-
                 // `shortcircuit` is the block to jump to when any condition fails
                 let (mut current, shortcircuit, inverted) = if cfg.blocks[r#else].has_successor(then) && is_only_pred!(bidx => r#else) {
                     (r#else, then, true)
@@ -244,23 +222,27 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
                     return None
                 };
 
-                while cfg.blocks[current].has_successor(then) {
-                    if cfg.blocks[current].next_block_idx == Some(then) {
+                let mut conditions = vec![];
+                loop {
+                    if cfg.blocks[current].next_block_idx == Some(shortcircuit) {
                         conditions.push(BoolCondition {
                             block_idx: current,
                             inverted: true,
                         });
-                        current = cfg.blocks[current].cond_next().unwrap()
+                        current = cfg.blocks[current].cond_next().unwrap();
                     }
-                    else /* cfg.blocks[current].cond_next() == Some(next) */ {
+                    else if cfg.blocks[current].cond_next() == Some(shortcircuit) {
                         conditions.push(BoolCondition {
                             block_idx: current,
                             inverted: false,
                         });
-                        current = cfg.blocks[current].next_block_idx.unwrap()
+                        current = cfg.blocks[current].next_block_idx.unwrap();
+                    }
+                    else {
+                        break;
                     }
                 }
-                debug_assert!(!conditions.is_empty(), "checked in branch condition");
+                debug_assert!(!conditions.is_empty(), "checked before");
                 
                 SearchResult::ShortCircuit {
                     conditions,
@@ -335,64 +317,6 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
                 block_idx: shortcircuit,
             });
             cfg.blocks[bidx].next_block_idx = Some(then);
-        },
-        SearchResult::BoolAnd { conditions, then, r#else } => {
-            // We need to transform: first, (ai, ac), (bi, bc), (di, dc)...
-            // into:                 (first, ai), (ac, bi), (bc, di)  with `dc` becoming the cond goto of the block
-
-            // Using a `let mut` instead of scan because we need the last, remaining value
-            let mut last_cond = cfg.blocks[bidx].cond_goto.as_ref().unwrap().cond;
-            let conditions = conditions.into_iter()
-                .map(|block| {
-                    let block = take_block!(block);
-                    (block.instructions, block.cond_goto.as_ref().unwrap().cond)
-                })
-                // again, this is a scan, but using last_cond, so we get the last
-                // value
-                .map(|(i, c)| {
-                    let val = (last_cond, i);
-                    last_cond = c;
-                    val
-                })
-                .collect_vec();
-
-            cfg.blocks[bidx].instructions.push(CFGInstruction::BoolAnd {
-                conditions,
-            });
-            cfg.blocks[bidx].cond_goto = Some(CFGGoto {
-                cond: last_cond,
-                block_idx: then,
-            });
-            cfg.blocks[bidx].next_block_idx = Some(r#else);
-        },
-        SearchResult::BoolOr { conditions, then, r#else } => {
-            // We need to transform: first, (ai, ac), (bi, bc), (di, dc)...
-            // into:                 (first, ai), (ac, bi), (bc, di)  with `dc` becoming the cond goto of the block
-
-            // Using a `let mut` instead of scan because we need the last, remaining value
-            let mut last_cond = cfg.blocks[bidx].cond_goto.as_ref().unwrap().cond;
-            let conditions = conditions.into_iter()
-                .map(|block| {
-                    let block = take_block!(block);
-                    (block.instructions, block.cond_goto.as_ref().unwrap().cond)
-                })
-                // again, this is a scan, but using last_cond, so we get the last
-                // value
-                .map(|(i, c)| {
-                    let val = (last_cond, i);
-                    last_cond = c;
-                    val
-                })
-                .collect_vec();
-
-            cfg.blocks[bidx].instructions.push(CFGInstruction::BoolOr {
-                conditions,
-            });
-            cfg.blocks[bidx].cond_goto = Some(CFGGoto {
-                cond: last_cond,
-                block_idx: then,
-            });
-            cfg.blocks[bidx].next_block_idx = Some(r#else);
         },
     }
 

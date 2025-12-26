@@ -5,6 +5,7 @@ use super::signatures;
 
 use std::{ borrow::Cow, fmt::Write, ops::Deref };
 use convert_case::ccase;
+use itertools::Itertools;
 
 pub struct ClassPrintContext<'a> {
     pub class: &'a Class,
@@ -261,8 +262,7 @@ pub enum Expression {
     },
     BoolOp {
         op: BoolOp,
-        lhs: Box<Expression>,
-        rhs: Box<Expression>,
+        operands: Vec<Expression>,
     },
 
     InstanceOf {
@@ -378,8 +378,8 @@ impl Expression {
                 let op_str = op.printed();
                 (90, format!("{op_str}{}", operand.printed_prec(ctx, 90)))
             }
-            Self::BoolOp { op, lhs, rhs } => {
-                (80, format!("{} {} {}", lhs.printed(ctx), op.printed(), rhs.printed(ctx)))
+            Self::BoolOp { op, operands } => {
+                (80, operands.iter().map(|op| op.printed(ctx)).intersperse(op.printed()).collect())
             },
             Expression::InstanceOf { class, object } => {
                 (0, format!("{} instanceof {}", object.printed(ctx), class.descriptor))
