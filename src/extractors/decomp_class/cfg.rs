@@ -12,9 +12,13 @@ pub(super) enum CFGInstruction<'a> {
         then: Vec<CFGInstruction<'a>>,
         r#else: Vec<CFGInstruction<'a>>,
     },
-    // This is evaluated by first evaluating the condition, if true this stops, otherwise
-    // the associated instructions are evaluated, continuing like that down the list
+    /// This is evaluated by first evaluating the condition, if true this stops, otherwise
+    /// the associated instructions are evaluated, continuing like that down the list
     BoolAnd {
+        conditions: Vec<(&'a minijvm::GotoCondition, Vec<CFGInstruction<'a>>)>,
+    },
+    /// See [`Self::BoolAnd`]
+    BoolOr {
         conditions: Vec<(&'a minijvm::GotoCondition, Vec<CFGInstruction<'a>>)>,
     },
 }
@@ -160,6 +164,11 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
             then: usize,
             r#else: usize,
         },
+        BoolOr {
+            conditions: Vec<usize>,
+            then: usize,
+            r#else: usize,
+        },
     }
 
     macro_rules! is_only_pred {
@@ -211,6 +220,29 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
                     conditions,
                     then,
                     r#else: current,
+                }
+            },
+
+            // Detect || boolean chaining
+            (Some(then), _, Some(r#else), _) if is_only_pred!(bidx => then) => {
+                let mut conditions = vec![];
+
+                let mut current = then;
+                while cfg.blocks[current].cond_goto.is_some() && cfg.blocks[current].next_block_idx == Some(r#else) {
+                    conditions.push(current);
+                    let Some(CFGGoto { block_idx: new_current, .. }) = cfg.blocks[current].cond_goto
+                    else { return None };
+                    current = new_current;
+                }
+
+                if conditions.is_empty() {
+                    return None;
+                }
+                
+                SearchResult::BoolOr {
+                    conditions,
+                    then: current,
+                    r#else,
                 }
             },
             
@@ -278,6 +310,35 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
                 .collect_vec();
 
             cfg.blocks[bidx].instructions.push(CFGInstruction::BoolAnd {
+                conditions,
+            });
+            cfg.blocks[bidx].cond_goto = Some(CFGGoto {
+                cond: last_cond,
+                block_idx: then,
+            });
+            cfg.blocks[bidx].next_block_idx = Some(r#else);
+        },
+        SearchResult::BoolOr { conditions, then, r#else } => {
+            // We need to transform: first, (ai, ac), (bi, bc), (di, dc)...
+            // into:                 (first, ai), (ac, bi), (bc, di)  with `dc` becoming the cond goto of the block
+
+            // Using a `let mut` instead of scan because we need the last, remaining value
+            let mut last_cond = cfg.blocks[bidx].cond_goto.as_ref().unwrap().cond;
+            let conditions = conditions.into_iter()
+                .map(|block| {
+                    let block = take_block!(block);
+                    (block.instructions, block.cond_goto.as_ref().unwrap().cond)
+                })
+                // again, this is a scan, but using last_cond, so we get the last
+                // value
+                .map(|(i, c)| {
+                    let val = (last_cond, i);
+                    last_cond = c;
+                    val
+                })
+                .collect_vec();
+
+            cfg.blocks[bidx].instructions.push(CFGInstruction::BoolOr {
                 conditions,
             });
             cfg.blocks[bidx].cond_goto = Some(CFGGoto {

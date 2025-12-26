@@ -463,7 +463,7 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
                     Err(count) => bail!("If branch should not result in a stack with more than one value, got {count}"),
                 }
             },
-            CFGInstruction::BoolAnd { conditions } => {
+            CFGInstruction::BoolAnd { conditions } | CFGInstruction::BoolOr { conditions } => {
                 // let result = std::iter::chain(
                 //     std::iter::once(pop_stack(stack)),
                 //     conditions.into_iter()

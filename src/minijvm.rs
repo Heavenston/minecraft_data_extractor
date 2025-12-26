@@ -386,7 +386,7 @@ impl IfCmp {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(Clone, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub struct GotoCondition {
     pub operand: IfOperand,
     pub cmp: IfCmp,
@@ -401,13 +401,33 @@ impl GotoCondition {
     }
 }
 
+impl std::fmt::Debug for GotoCondition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GotoCondition({}{})",
+            match self.operand {
+                IfOperand::Int => "int",
+                IfOperand::Ref => "ref",
+                IfOperand::Zero => "0",
+                IfOperand::Null => "null",
+            }, match self.cmp {
+                IfCmp::Eq => "==",
+                IfCmp::Ne => "!=",
+                IfCmp::Lt => "<",
+                IfCmp::Le => "<=",
+                IfCmp::Gt => ">",
+                IfCmp::Ge => ">=",
+            }
+        )
+    }
+}
+
 #[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
 pub struct SwitchCaseTarget {
     pub value: i32,
     pub target: i32,
 }
 
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+#[derive(derive_more::Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum Instruction {
     Noop,
     Dup {
@@ -419,6 +439,7 @@ pub enum Instruction {
     },
     Swap,
 
+    #[debug("Constant({value:?})")]
     Constant { value: ConstantValue },
     Convert { from: ValueKind, to: ValueKind },
 
