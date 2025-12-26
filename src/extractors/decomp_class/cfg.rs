@@ -14,6 +14,11 @@ pub(super) enum CFGInstruction<'a> {
     },
     /// This is evaluated by first evaluating the condition, if true this stops, otherwise
     /// the associated instructions are evaluated, continuing like that down the list
+    ShortCircuit {
+        conditions: Vec<(minijvm::GotoCondition, Vec<CFGInstruction<'a>>)>,
+    },
+    /// This is evaluated by first evaluating the condition, if true this stops, otherwise
+    /// the associated instructions are evaluated, continuing like that down the list
     BoolAnd {
         conditions: Vec<(&'a minijvm::GotoCondition, Vec<CFGInstruction<'a>>)>,
     },
@@ -40,6 +45,14 @@ impl CFGBlock<'_> {
     fn simple_next(&self) -> Option<usize> {
         if self.cond_goto.is_some() { return None }
         self.next_block_idx
+    }
+
+    fn cond_next(&self) -> Option<usize> {
+        self.cond_goto.as_ref().map(|p| p.block_idx)
+    }
+
+    fn has_successor(&self, succ: usize) -> bool {
+        self.next_block_idx == Some(succ) || self.cond_next() == Some(succ)
     }
 }
 
@@ -152,11 +165,28 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
     debug_assert!(taken_blocks.iter().copied().enumerate().filter(|&(_, taken)| taken).all(|(bidx, _)| cfg.block_predecessor(bidx).count() == 0), "All taken blocks should have no predecessor");
 
     #[derive(Debug)]
+    struct BoolCondition {
+        block_idx: usize,
+        // Wether the condition is inverted (the `then` is actually the short cirtuit's r#else)
+        inverted: bool,
+    }
+
+    #[derive(Debug)]
     enum SearchResult {
         If {
             then: Option<usize>,
             r#else: Option<usize>,
             finally: Option<usize>,
+        },
+
+        ShortCircuit {
+            conditions: Vec<BoolCondition>,
+            /// Wether the current block is inverted or not
+            inverted: bool,
+            /// When all conditions succeeds
+            then: usize,
+            /// If any of the conditions fail
+            shortcircuit: usize,
         },
 
         BoolAnd {
@@ -171,6 +201,7 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
         },
     }
 
+    /// Wether $parent is the only predecessor to $child
     macro_rules! is_only_pred {
         ($parent: expr => $child: expr) => {
             cfg.block_predecessor($child).exactly_one().is_ok_and(|(idx, _)| idx == $parent)
@@ -200,49 +231,42 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
             (Some(then), finally, Some(r#else), finally2) if finally == finally2 && is_only_pred!(bidx => then) && is_only_pred!(bidx => r#else)
                 => SearchResult::If { then: Some(then), r#else: Some(r#else), finally },
 
-            // Detect && boolean chaining
-            (Some(then), _, Some(r#else), _) if is_only_pred!(bidx => r#else) => {
+            // Detect short cirtuiting boolean chaining
+            (Some(then), _, Some(r#else), _) => {
                 let mut conditions = vec![];
 
-                let mut current = r#else;
-                while cfg.blocks[current].cond_goto.as_ref().is_some_and(|goto| goto.block_idx == then) {
-                    conditions.push(current);
-                    let Some(new_current) = cfg.blocks[current].next_block_idx
-                    else { return None };
-                    current = new_current;
-                }
+                // `shortcircuit` is the block to jump to when any condition fails
+                let (mut current, shortcircuit, inverted) = if cfg.blocks[r#else].has_successor(then) && is_only_pred!(bidx => r#else) {
+                    (r#else, then, true)
+                } else if cfg.blocks[then].has_successor(r#else) && is_only_pred!(bidx => then) {
+                    (then, r#else, false)
+                } else {
+                    return None
+                };
 
-                if conditions.is_empty() {
-                    return None;
+                while cfg.blocks[current].has_successor(then) {
+                    if cfg.blocks[current].next_block_idx == Some(then) {
+                        conditions.push(BoolCondition {
+                            block_idx: current,
+                            inverted: true,
+                        });
+                        current = cfg.blocks[current].cond_next().unwrap()
+                    }
+                    else /* cfg.blocks[current].cond_next() == Some(next) */ {
+                        conditions.push(BoolCondition {
+                            block_idx: current,
+                            inverted: false,
+                        });
+                        current = cfg.blocks[current].next_block_idx.unwrap()
+                    }
                 }
+                debug_assert!(!conditions.is_empty(), "checked in branch condition");
                 
-                SearchResult::BoolAnd {
+                SearchResult::ShortCircuit {
                     conditions,
-                    then,
-                    r#else: current,
-                }
-            },
-
-            // Detect || boolean chaining
-            (Some(then), _, Some(r#else), _) if is_only_pred!(bidx => then) => {
-                let mut conditions = vec![];
-
-                let mut current = then;
-                while cfg.blocks[current].cond_goto.is_some() && cfg.blocks[current].next_block_idx == Some(r#else) {
-                    conditions.push(current);
-                    let Some(CFGGoto { block_idx: new_current, .. }) = cfg.blocks[current].cond_goto
-                    else { return None };
-                    current = new_current;
-                }
-
-                if conditions.is_empty() {
-                    return None;
-                }
-                
-                SearchResult::BoolOr {
-                    conditions,
+                    inverted,
                     then: current,
-                    r#else,
+                    shortcircuit,
                 }
             },
             
@@ -288,6 +312,29 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
                 r#else,
             });
             cfg.blocks[bidx].next_block_idx = finally;
+        },
+        SearchResult::ShortCircuit { conditions, inverted, then, shortcircuit } => {
+            let mut last_cond = cfg.blocks[bidx].cond_goto.as_ref().unwrap().cond.clone();
+            if inverted { last_cond = last_cond.invert(); }
+
+            let conditions = conditions.into_iter()
+                .map(|BoolCondition { block_idx, inverted }| {
+                    let block = take_block!(block_idx);
+                    let cond = block.cond_goto.unwrap().cond;
+                    (block.instructions, if inverted { cond.invert() } else { cond.clone() })
+                })
+                .map(|(i, c)| (std::mem::replace(&mut last_cond, c), i))
+                .collect_vec();
+
+            cfg.blocks[bidx].instructions.push(CFGInstruction::ShortCircuit {
+                conditions,
+            });
+            cfg.blocks[bidx].cond_goto = Some(CFGGoto {
+                // IMPORTANT: FIXME: Remove the leak
+                cond: Box::leak(Box::new(last_cond)),
+                block_idx: shortcircuit,
+            });
+            cfg.blocks[bidx].next_block_idx = Some(then);
         },
         SearchResult::BoolAnd { conditions, then, r#else } => {
             // We need to transform: first, (ai, ac), (bi, bc), (di, dc)...
