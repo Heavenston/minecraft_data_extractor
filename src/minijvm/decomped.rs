@@ -181,8 +181,9 @@ fn format_throws_clause(throws: &[signatures::ThrowsSignature]) -> String {
     }
 }
 
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+#[derive(derive_more::Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum Constant {
+    #[debug("Byte({_0}{})", u32::try_from(*_0).ok().and_then(|p| char::from_u32(p)).map(|c| format!(" '{}'", c.escape_default())).unwrap_or_default())]
     Byte(i8),
     Short(i16),
     Int(i32),
@@ -263,6 +264,7 @@ pub enum Expression {
     BoolOp {
         op: BoolOp,
         operands: Vec<Expression>,
+        fallback: Box<Expression>,
     },
 
     InstanceOf {
@@ -378,8 +380,8 @@ impl Expression {
                 let op_str = op.printed();
                 (90, format!("{op_str}{}", operand.printed_prec(ctx, 90)))
             }
-            Self::BoolOp { op, operands } => {
-                (80, operands.iter().map(|op| op.printed(ctx)).intersperse(op.printed()).collect())
+            Self::BoolOp { op, operands, fallback } => {
+                (80, format!("{} ?? {}", operands.iter().map(|op| op.printed(ctx)).intersperse(format!(" {} ", op.printed())).collect::<String>(), fallback.printed(ctx)))
             },
             Expression::InstanceOf { class, object } => {
                 (0, format!("{} instanceof {}", object.printed(ctx), class.descriptor))

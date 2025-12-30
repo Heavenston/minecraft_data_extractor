@@ -438,8 +438,11 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
 
     for instruction in instructions {
         match instruction {
-            CFGInstruction::Intsructions(instructions) => {
+            CFGInstruction::Instructions(instructions) => {
                 statements.extend(decomp_block_code(instructions, stack, next_temp)?);
+            },
+            CFGInstruction::SyntheticInstruction(instruction) => {
+                statements.extend(decomp_block_code(std::slice::from_ref(instruction), stack, next_temp)?);
             },
             CFGInstruction::If { condition, then, r#else } => {
                 let condition = convert_condition_to_expression(&condition.invert(), stack)?;
@@ -454,6 +457,7 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
 
                 match then_stack.into_iter().zip(else_stack.into_iter()).at_most_one().map_err(|e| e.count()) {
                     Ok(Some((lhs, rhs))) => {
+                        ensure!(then_instructions.is_empty() && else_instructions.is_empty(), "If branches cannot both have statements and finish with an expression");
                         stack.push(decomped::Expression::Ternary {
                             condition: Box::new(condition),
                             then_value: Box::new(lhs),
@@ -468,14 +472,14 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
                     Err(count) => bail!("If branch should not result in a stack with more than one value, got {count}"),
                 }
             },
-            CFGInstruction::ShortCircuit { conditions } => {
+            CFGInstruction::ShortCircuit { conditions, fallback } => {
                 println!("<SC>\n");
                 let operands: Vec<_> = conditions.into_iter()
                     .map(|(condition, instructions)| -> anyhow::Result<decomped::Expression> {
                         println!("&&\n{condition:?}\n{stack:?}");
                         // this is taking the expressions of the last iteration
                         let cond_expr = convert_condition_to_expression(condition, stack)?;
-                        println!("{stack:?}\n");
+                        println!("{cond_expr:?}\n{stack:?}\n");
 
                         let statements = decomp_cfg_instructions(&instructions, next_temp, stack)?;
                         ensure!(statements.is_empty(), "BoolAnd conditions should not contain statements");
@@ -483,10 +487,22 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
                         Ok(cond_expr)
                     })
                     .try_collect()?;
+                let final_expr = pop_stack(stack)?;
+                println!("SC result - {final_expr:?}");
+                println!("<fallback>\n");
+                let fallback = {
+                    let mut temp_stack = vec![];
+                    let statements = decomp_cfg_instructions(fallback, next_temp, &mut temp_stack)?;
+                    ensure!(statements.is_empty(), "ShortCircuit fallback should not contain statements");
+                    ensure!(temp_stack.len() == 1, "ShortCircuit fallback should evaluate to a single expression");
+                    Box::new(pop_stack(&mut temp_stack)?)
+                };
+                println!("</fallback>\n");
                 println!("</SC>\n");
                 stack.push(decomped::Expression::BoolOp {
                     op: decomped::BoolOp::And,
                     operands,
+                    fallback,
                 });
             },
         }

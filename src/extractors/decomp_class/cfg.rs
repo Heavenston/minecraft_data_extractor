@@ -6,7 +6,8 @@ use itertools::Itertools;
 
 #[derive(Clone)]
 pub(super) enum CFGInstruction<'a> {
-    Intsructions(&'a [minijvm::Instruction]),
+    Instructions(&'a [minijvm::Instruction]),
+    SyntheticInstruction(minijvm::Instruction),
     If {
         condition: &'a minijvm::GotoCondition,
         then: Vec<CFGInstruction<'a>>,
@@ -16,6 +17,8 @@ pub(super) enum CFGInstruction<'a> {
     /// the associated instructions are evaluated, continuing like that down the list
     ShortCircuit {
         conditions: Vec<(minijvm::GotoCondition, Vec<CFGInstruction<'a>>)>,
+        /// When any condition fails
+        fallback: Vec<CFGInstruction<'a>>,
     },
 }
 
@@ -42,21 +45,23 @@ impl CFGInstruction<'_> {
 
     pub fn print(&self, ident_n: usize) -> String {
         let ident = Self::ident(ident_n);
+        let nident = Self::ident(ident_n + 1);
         match self {
-            Self::Intsructions(instructions) => format!("{ident}{instructions:?}"),
+            Self::Instructions(instructions) => format!("{ident}{instructions:?}"),
+            Self::SyntheticInstruction(instruction) => format!("{ident}synthetic - {instruction:?}"),
             Self::If { condition, then, r#else } => {
                 format!("{ident}if {condition:?};\n{ident}then\n{}\n{ident}else\n{}",
                     Self::print_slice(then, ident_n + 1),
                     Self::print_slice(r#else, ident_n + 1),
                 )
             },
-            Self::ShortCircuit { conditions } => {
-                format!("{ident}ShortCircuit{}",
-                    conditions.iter().map(|(cond, expr)| format!("\n{}{cond:?} ->\n{}",
-                            Self::ident(ident_n + 1),
+            Self::ShortCircuit { conditions, fallback } => {
+                format!("{ident}ShortCircuit{}\n{nident}else ->\n{}",
+                    conditions.iter().map(|(cond, expr)| format!("\n{nident}{cond:?} ->\n{}",
                             Self::print_slice(&expr, ident_n + 2)
                         ))
                         .collect::<String>(),
+                    Self::print_slice(&fallback, ident_n + 2),
                 )
             },
         }
@@ -70,9 +75,10 @@ impl<'a> std::fmt::Debug for CFGInstruction<'a> {
         }
         else {
             match self {
-                Self::Intsructions(arg0) => f.debug_tuple("Intsructions").field(arg0).finish(),
+                Self::Instructions(arg0) => f.debug_tuple("Instructions").field(arg0).finish(),
+                Self::SyntheticInstruction(arg0) => f.debug_tuple("SyntheticInstruction").field(arg0).finish(),
                 Self::If { condition, then, r#else } => f.debug_struct("If").field("condition", condition).field("then", then).field("r#else", r#else).finish(),
-                Self::ShortCircuit { conditions } => f.debug_struct("ShortCircuit").field("conditions", conditions).finish(),
+                Self::ShortCircuit { conditions, fallback } => f.debug_struct("ShortCircuit").field("conditions", conditions).field("fallback", fallback).finish(),
             }
         }
     }
@@ -127,7 +133,13 @@ impl<'a> ControlFlowGraph<'a> {
 
     pub(super) fn simplify(&mut self) -> anyhow::Result<()> {
         let mut taken_blocks = vec![false; self.blocks.len()];
-        while simplify_cfg(self, &mut taken_blocks)? { }
+        while simplify_cfg(self, &mut taken_blocks)? {
+            while taken_blocks.last().copied().unwrap_or(false) {
+                self.blocks.pop();
+                taken_blocks.pop();
+            }
+            println!("simp {self:#?}");
+        }
 
         while taken_blocks.last().copied().unwrap_or(false) {
             self.blocks.pop();
@@ -153,7 +165,7 @@ fn construct_cfg(instructions: &'_ [minijvm::Instruction]) -> anyhow::Result<Con
         if jump_target_markers.contains(&pc) && current_block_start != pc {
             blocks_ranges.push(current_block_start..pc);
             cfg.blocks.push(CFGBlock {
-                instructions: vec![CFGInstruction::Intsructions(&instructions[current_block_start..pc])],
+                instructions: vec![CFGInstruction::Instructions(&instructions[current_block_start..pc])],
                 cond_goto: None,
                 next_block_idx: Some(pc),
             });
@@ -167,7 +179,7 @@ fn construct_cfg(instructions: &'_ [minijvm::Instruction]) -> anyhow::Result<Con
 
             blocks_ranges.push(current_block_start..pc+1);
             cfg.blocks.push(CFGBlock {
-                instructions: vec![CFGInstruction::Intsructions(&instructions[current_block_start..pc])],
+                instructions: vec![CFGInstruction::Instructions(&instructions[current_block_start..pc])],
                 cond_goto: cond.as_ref().map(|cond| CFGGoto {
                     cond,
                     block_idx: target,
@@ -185,7 +197,7 @@ fn construct_cfg(instructions: &'_ [minijvm::Instruction]) -> anyhow::Result<Con
     if current_block_start != instructions.len() {
         blocks_ranges.push(current_block_start..instructions.len());
         cfg.blocks.push(CFGBlock {
-            instructions: vec![CFGInstruction::Intsructions(&instructions[current_block_start..])],
+            instructions: vec![CFGInstruction::Instructions(&instructions[current_block_start..])],
             cond_goto: None,
             next_block_idx: None,
         });
@@ -358,7 +370,7 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
             let mut last_cond = cfg.blocks[bidx].cond_goto.as_ref().unwrap().cond.clone();
             if inverted { last_cond = last_cond.invert(); }
 
-            let conditions = conditions.into_iter()
+            let mut conditions = conditions.into_iter()
                 .map(|BoolCondition { block_idx, inverted }| {
                     let block = take_block!(block_idx);
                     let cond = block.cond_goto.unwrap().cond;
@@ -367,12 +379,21 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
                 .map(|(i, c)| (std::mem::replace(&mut last_cond, c), i))
                 .collect_vec();
 
+            conditions.push((
+                last_cond,
+                vec![CFGInstruction::SyntheticInstruction(minijvm::Instruction::Constant { value: minijvm::ConstantValue::Int(1) })],
+            ));
+
             cfg.blocks[bidx].instructions.push(CFGInstruction::ShortCircuit {
                 conditions,
+                fallback: vec![CFGInstruction::SyntheticInstruction(minijvm::Instruction::Constant { value: minijvm::ConstantValue::Int(0) })],
             });
             cfg.blocks[bidx].cond_goto = Some(CFGGoto {
                 // IMPORTANT: FIXME: Remove the leak
-                cond: Box::leak(Box::new(last_cond)),
+                cond: Box::leak(Box::new(minijvm::GotoCondition {
+                    operand: minijvm::IfOperand::Zero,
+                    cmp: minijvm::IfCmp::Ne,
+                })),
                 block_idx: shortcircuit,
             });
             cfg.blocks[bidx].next_block_idx = Some(then);

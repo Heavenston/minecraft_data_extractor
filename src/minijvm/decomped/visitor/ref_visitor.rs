@@ -115,8 +115,9 @@ pub fn walk_expression<V: RefVisitor + ?Sized>(v: &mut V, expr: &Expression) -> 
             v.visit_expression(rhs)?;
         }
         Expression::UnOp { operand, .. } => v.visit_expression(operand)?,
-        Expression::BoolOp { op: _, operands } => {
+        Expression::BoolOp { op: _, operands, fallback } => {
             operands.iter().try_for_each(|expr| v.visit_expression(expr))?;
+            v.visit_expression(&fallback)?;
         },
         Expression::InstanceOf { object, .. } => v.visit_expression(object)?,
         Expression::Invoke { object, args, .. } => {
