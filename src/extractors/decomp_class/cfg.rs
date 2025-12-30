@@ -4,7 +4,7 @@ use std::{ collections::{ HashSet }, ops::Range };
 use anyhow::{ anyhow, ensure };
 use itertools::Itertools;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) enum CFGInstruction<'a> {
     Intsructions(&'a [minijvm::Instruction]),
     If {
@@ -17,6 +17,65 @@ pub(super) enum CFGInstruction<'a> {
     ShortCircuit {
         conditions: Vec<(minijvm::GotoCondition, Vec<CFGInstruction<'a>>)>,
     },
+}
+
+impl CFGInstruction<'_> {
+    fn print_slice(slice: &[CFGInstruction<'_>], ident_n: usize) -> String{
+        slice.iter().map(|p| p.print(ident_n))
+            .intersperse("\n".to_string())
+            .collect::<String>()
+    }
+
+    fn ident(n: usize) -> impl std::fmt::Display + Copy {
+        #[derive(Clone, Copy)]
+        struct Ident(usize);
+        impl std::fmt::Display for Ident {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                for _ in 0..self.0 {
+                    write!(f, "  ")?;
+                }
+                Ok(())
+            }
+        }
+        Ident(n)
+    }
+
+    pub fn print(&self, ident_n: usize) -> String {
+        let ident = Self::ident(ident_n);
+        match self {
+            Self::Intsructions(instructions) => format!("{ident}{instructions:?}"),
+            Self::If { condition, then, r#else } => {
+                format!("{ident}if {condition:?};\n{ident}then\n{}\n{ident}else\n{}",
+                    Self::print_slice(then, ident_n + 1),
+                    Self::print_slice(r#else, ident_n + 1),
+                )
+            },
+            Self::ShortCircuit { conditions } => {
+                format!("{ident}ShortCircuit{}",
+                    conditions.iter().map(|(cond, expr)| format!("\n{}{cond:?} ->\n{}",
+                            Self::ident(ident_n + 1),
+                            Self::print_slice(&expr, ident_n + 2)
+                        ))
+                        .collect::<String>(),
+                )
+            },
+        }
+    }
+}
+
+impl<'a> std::fmt::Debug for CFGInstruction<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.alternate() {
+            write!(f, "{}", self.print(0))
+        }
+        else {
+            match self {
+                Self::Intsructions(arg0) => f.debug_tuple("Intsructions").field(arg0).finish(),
+                Self::If { condition, then, r#else } => f.debug_struct("If").field("condition", condition).field("then", then).field("r#else", r#else).finish(),
+                Self::ShortCircuit { conditions } => f.debug_struct("ShortCircuit").field("conditions", conditions).finish(),
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -190,9 +190,10 @@ fn convert_constant(constant: &minijvm::Constant) -> decomped::Constant {
 
 fn convert_condition_to_expression(cond: &minijvm::GotoCondition, stack: &mut Vec<decomped::Expression>) -> anyhow::Result<decomped::Expression> {
     let rhs_const = match cond.operand {
+        minijvm::IfOperand::Int |
+        minijvm::IfOperand::Ref => None,
         minijvm::IfOperand::Zero => Some(decomped::Constant::Int(0)),
         minijvm::IfOperand::Null => Some(decomped::Constant::Null),
-        _ => None,
     };
 
     let (lhs, rhs) = if let Some(c) = rhs_const {
@@ -238,7 +239,7 @@ fn decomp_block_code(
                 let depth = *depth as usize;
                 let count = *count as usize;
                 if stack.len() < depth + count {
-                    return Err(anyhow!("Not enough values on stack for dup"));
+                    bail!("Not enough values on stack for dup");
                 }
                 let start = stack.len() - depth - count;
                 for i in start..start + count {
@@ -426,6 +427,7 @@ fn decomp_block_code(
             Instr::Unknown(instruction) => warn!(%instruction, "Cannot decompile unknown instruction"),
             Instr::Goto { .. } => bail!("Unexpected goto inside decomp_block"),
         }
+        println!("{instr:?}\n{stack:?}\n");
     }
 
     Ok(statements)
@@ -441,6 +443,7 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
             },
             CFGInstruction::If { condition, then, r#else } => {
                 let condition = convert_condition_to_expression(&condition.invert(), stack)?;
+                println!("IF\n{condition:?}\n{stack:?}\n");
                 // we use a different stack, which means if conditions cannot take existing values
                 // from the stack, supposedly does not happen
                 let mut then_stack = vec![];
@@ -466,10 +469,13 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
                 }
             },
             CFGInstruction::ShortCircuit { conditions } => {
+                println!("<SC>\n");
                 let operands: Vec<_> = conditions.into_iter()
                     .map(|(condition, instructions)| -> anyhow::Result<decomped::Expression> {
+                        println!("&&\n{condition:?}\n{stack:?}");
                         // this is taking the expressions of the last iteration
                         let cond_expr = convert_condition_to_expression(condition, stack)?;
+                        println!("{stack:?}\n");
 
                         let statements = decomp_cfg_instructions(&instructions, next_temp, stack)?;
                         ensure!(statements.is_empty(), "BoolAnd conditions should not contain statements");
@@ -477,6 +483,7 @@ fn decomp_cfg_instructions<'a>(instructions: &[CFGInstruction<'a>], next_temp: &
                         Ok(cond_expr)
                     })
                     .try_collect()?;
+                println!("</SC>\n");
                 stack.push(decomped::Expression::BoolOp {
                     op: decomped::BoolOp::And,
                     operands,
@@ -492,9 +499,9 @@ fn decomp_code(code: &minijvm::Code) -> anyhow::Result<Vec<decomped::Statement>>
     ensure!(code.exception_handlers.is_empty(), "Try-catches are not supported");
 
     let mut cfg = ControlFlowGraph::new(&code.instructions)?;
-    println!("BEFORE {cfg:?}");
+    println!("BEFORE {cfg:#?}");
     cfg.simplify()?;
-    println!("AFTER {cfg:?}");
+    println!("AFTER {cfg:#?}");
     let block = match cfg.blocks.into_iter().at_most_one() {
         Ok(Some(b)) => b,
         Ok(None) => bail!("No block in CFG after simplification"),

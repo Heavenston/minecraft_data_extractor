@@ -236,8 +236,10 @@ pub enum Constant {
 }
 
 // TODO: Vs Constant?
-#[derive(Debug, Clone, bincode::Encode, bincode::Decode)]
+#[derive(derive_more::Debug, Clone, bincode::Encode, bincode::Decode)]
 pub enum ConstantValue {
+    // Provide as character when possible
+    #[debug("Byte({_0}{})", u32::try_from(*_0).ok().and_then(|p| char::from_u32(p)).map(|c| format!(" '{}'", c.escape_default())).unwrap_or_default())]
     Byte(i8),
     Short(i16),
     Int(i32),
