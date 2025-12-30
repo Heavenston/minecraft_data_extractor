@@ -369,97 +369,89 @@ impl Expression {
 
     fn printed_inner(&self, ctx: &MethodPrintContext) -> (u8, String) {
         match self {
-            Expression::Constant { value } => (100, value.printed()),
-            Expression::Load { index, .. } => (100, ctx.local_name(*index).to_string()),
-            Expression::LoadTemp { index } => (100, format!("temp_{index}")),
+            Expression::Constant { value } => (150, value.printed()),
+            Expression::Load { index, .. } => (150, ctx.local_name(*index).to_string()),
+            Expression::LoadTemp { index } => (150, format!("temp_{index}")),
             Expression::BinOp { op, lhs, rhs, .. } => {
                 let (prec, op_str) = op.printed_with_prec();
                 (prec, format!("{} {op_str} {}", lhs.printed_prec(ctx, prec), rhs.printed_prec(ctx, prec + 1)))
             }
             Expression::UnOp { op, operand, .. } => {
                 let op_str = op.printed();
-                (90, format!("{op_str}{}", operand.printed_prec(ctx, 90)))
+                (140, format!("{op_str}{}", operand.printed_prec(ctx, 140)))
             }
             Self::BoolOp { op, operands, fallback } => {
-                (80, format!("{} ?? {}", operands.iter().map(|op| op.printed(ctx)).intersperse(format!(" {} ", op.printed())).collect::<String>(), fallback.printed(ctx)))
+                // Logic (&& is 50, || is 40). Defaulting to 50 for general boolean logic.
+                (50, format!("{} ?? {}", operands.iter().map(|op| op.printed(ctx)).intersperse(format!(" {} ", op.printed())).collect::<String>(), fallback.printed(ctx)))
             },
             Expression::InstanceOf { class, object } => {
-                (0, format!("{} instanceof {}", object.printed(ctx), class.descriptor))
+                (100, format!("{} instanceof {}", object.printed_prec(ctx, 100), class.descriptor))
             }
             Expression::Invoke { kind, method, object, args } => {
                 let args_str = args.iter().map(|a| a.printed(ctx)).collect::<Vec<_>>().join(", ");
-
-                // I dont know right now how it works for interfaces so this is
-                // probably wrong for this cases, also not sure when going multiple
-                // classes up the hierarchy
                 let is_super_call = *kind == super::InvokeKind::Special
-                    && ctx.class.super_class.as_ref().zip(method.class.descriptor.simple_class_name()).is_some_and(|(a, b)| a == b)
-                ;
+                    && ctx.class.super_class.as_ref().zip(method.class.descriptor.simple_class_name()).is_some_and(|(a, b)| a == b);
 
                 let s = if method.name.0 == "<init>" {
-                    if is_super_call {
-                        format!("super({args_str})")
-                    }
-                    else {
-                        format!("this({args_str})")
-                    }
+                    if is_super_call { format!("super({args_str})") }
+                    else { format!("this({args_str})") }
                 } else if is_super_call {
                     format!("super.{}({args_str})", method.name.0)
                 } else {
                     match object {
-                        Some(obj) => format!("{}.{}({args_str})", obj.printed_prec(ctx, 100), method.name.0),
+                        Some(obj) => format!("{}.{}({args_str})", obj.printed_prec(ctx, 150), method.name.0),
                         None if method.class.descriptor.simple_class_name() == Some(&ctx.class.name) => {
                             format!("{}({args_str})", method.name.0)
                         },
                         None => format!("{}.{}({args_str})", method.class.descriptor, method.name.0),
                     }
                 };
-                (100, s)
+                (150, s)
             }
             Expression::InvokeDynamic { name, args, .. } => {
                 let args_str = args.iter().map(|a| a.printed(ctx)).collect::<Vec<_>>().join(", ");
-                (100, format!("{name}({args_str})"))
+                (150, format!("{name}({args_str})"))
             }
             Expression::New { class, args } => {
                 let args_str = args.iter().map(|a| a.printed(ctx)).collect::<Vec<_>>().join(", ");
-                (100, format!("new {}({args_str})", class.descriptor))
+                (150, format!("new {}({args_str})", class.descriptor))
             }
             Expression::NewArray { kind, count } => {
-                (100, format!("new {}[{}]", kind.printed(), count.printed(ctx)))
+                (150, format!("new {}[{}]", kind.printed(), count.printed(ctx)))
             }
             Expression::Convert { to, value, .. } => {
-                (90, format!("({}){}", to.printed(), value.printed_prec(ctx, 90)))
+                (140, format!("({}){}", to.printed(), value.printed_prec(ctx, 140)))
             }
             Expression::GetField { is_static, field, object } => {
                 let target = if *is_static {
                     field.class.descriptor.to_string()
                 } else {
-                    object.as_ref().map(|o| o.printed_prec(ctx, 100)).unwrap_or_else(|| "this".to_string())
+                    object.as_ref().map(|o| o.printed_prec(ctx, 150)).unwrap_or_else(|| "this".to_string())
                 };
-                (100, format!("{target}.{}", field.name.0))
+                (150, format!("{target}.{}", field.name.0))
             }
             Expression::LoadFromArray { array, index, .. } => {
-                (100, format!("{}[{}]", array.printed_prec(ctx, 100), index.printed(ctx)))
+                (150, format!("{}[{}]", array.printed_prec(ctx, 150), index.printed(ctx)))
             }
             Expression::ArrayLength { array } => {
-                (100, format!("{}.length", array.printed_prec(ctx, 100)))
+                (150, format!("{}.length", array.printed_prec(ctx, 150)))
             }
             Expression::Cast { class, value } => {
-                (90, format!("({}){}", class.descriptor, value.printed_prec(ctx, 90)))
+                (140, format!("({}){}", class.descriptor, value.printed_prec(ctx, 140)))
             }
             Expression::Compare { cmp, lhs, rhs } => {
                 let op_str = cmp.printed();
-                (30, format!("{} {op_str} {}", lhs.printed_prec(ctx, 30), rhs.printed_prec(ctx, 31)))
+                (100, format!("{} {op_str} {}", lhs.printed_prec(ctx, 100), rhs.printed_prec(ctx, 101)))
             }
             Expression::Ternary { condition, then_value, else_value } => {
-                (10, format!("{} ? {} : {}", condition.printed_prec(ctx, 10), then_value.printed_prec(ctx, 10), else_value.printed_prec(ctx, 10)))
+                (30, format!("{} ? {} : {}", condition.printed_prec(ctx, 30), then_value.printed_prec(ctx, 30), else_value.printed_prec(ctx, 30)))
             }
             Expression::Lambda { target, interface_method: _, captures } => {
                 if captures.is_empty() {
-                    (100, format!("{}::{}", target.class.descriptor, target.name.0))
+                    (150, format!("{}::{}", target.class.descriptor, target.name.0))
                 } else {
                     let captures_str = captures.iter().map(|c| c.printed(ctx)).collect::<Vec<_>>().join(", ");
-                    (100, format!("[{}]{}::{}", captures_str, target.class.descriptor, target.name.0))
+                    (20, format!("[{}]{}::{}", captures_str, target.class.descriptor, target.name.0))
                 }
             }
             Expression::Switch { value, cases, default } => {
@@ -470,9 +462,9 @@ impl Expression {
                 }
                 s.push_str(&format!("default -> {} ", default.printed(ctx)));
                 s.push('}');
-                (100, s)
+                (20, s)
             }
-            Expression::Throw { value } => (5, format!("throw {}", value.printed_prec(ctx, 5))),
+            Expression::Throw { value } => (10, format!("throw {}", value.printed_prec(ctx, 10))),
         }
     }
 }
