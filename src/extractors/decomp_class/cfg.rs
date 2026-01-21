@@ -9,7 +9,7 @@ pub(super) enum CFGInstruction<'a> {
     Instructions(&'a [minijvm::Instruction]),
     SyntheticInstruction(minijvm::Instruction),
     If {
-        condition: &'a minijvm::GotoCondition,
+        condition: minijvm::GotoCondition,
         then: Vec<CFGInstruction<'a>>,
         r#else: Vec<CFGInstruction<'a>>,
     },
@@ -85,15 +85,15 @@ impl<'a> std::fmt::Debug for CFGInstruction<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct CFGGoto<'a> {
-    pub(super) cond: &'a minijvm::GotoCondition,
+pub(super) struct CFGGoto {
+    pub(super) cond: minijvm::GotoCondition,
     pub(super) block_idx: usize,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct CFGBlock<'a> {
     pub(super) instructions: Vec<CFGInstruction<'a>>,
-    pub(super) cond_goto: Option<CFGGoto<'a>>,
+    pub(super) cond_goto: Option<CFGGoto>,
     pub(super) next_block_idx: Option<usize>,
 }
 
@@ -181,7 +181,7 @@ fn construct_cfg(instructions: &'_ [minijvm::Instruction]) -> anyhow::Result<Con
             cfg.blocks.push(CFGBlock {
                 instructions: vec![CFGInstruction::Instructions(&instructions[current_block_start..pc])],
                 cond_goto: cond.as_ref().map(|cond| CFGGoto {
-                    cond,
+                    cond: cond.clone(),
                     block_idx: target,
                 }),
                 next_block_idx: cond.as_ref().map(|_| pc + 1)
@@ -360,7 +360,7 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
 
             let condition = cfg.blocks[bidx].cond_goto.take().unwrap().cond;
             cfg.blocks[bidx].instructions.push(CFGInstruction::If {
-                condition,
+                condition: condition.clone(),
                 then,
                 r#else,
             });
@@ -390,10 +390,10 @@ fn simplify_cfg(cfg: &mut ControlFlowGraph, taken_blocks: &mut [bool]) -> anyhow
             });
             cfg.blocks[bidx].cond_goto = Some(CFGGoto {
                 // IMPORTANT: FIXME: Remove the leak
-                cond: Box::leak(Box::new(minijvm::GotoCondition {
+                cond: minijvm::GotoCondition {
                     operand: minijvm::IfOperand::Zero,
                     cmp: minijvm::IfCmp::Ne,
-                })),
+                },
                 block_idx: shortcircuit,
             });
             cfg.blocks[bidx].next_block_idx = Some(then);
